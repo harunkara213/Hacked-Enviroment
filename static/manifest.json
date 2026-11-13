@@ -1,0 +1,12 @@
+{
+  "name": "Hacker Environment",
+  "short_name": "HackerEnv",
+  "description": "Spot trash. Clean it. Earn your Generation Score.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#07261c",
+  "theme_color": "#0f3d2e",
+  "icons": [
+    { "src": "/static/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}

@@ -1,0 +1,204 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0f3d2e">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<link rel="manifest" href="/manifest.json">
+<link rel="icon" href="/static/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/static/icon.svg">
+<title>Hacker Environment</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<script src="https://cdn.tailwindcss.com/3.4.17"></script>
+<script>
+tailwind.config = { theme: { extend: {
+  fontFamily: { sans: ['Inter', 'system-ui', 'sans-serif'] },
+  colors: { forest: { 50:'#ecfdf3',100:'#d1fae1',400:'#34d27b',500:'#16b364',600:'#0e9150',700:'#0d7343',800:'#0f5b37',900:'#0f3d2e',950:'#07261c' } }
+}}}
+</script>
+<style>
+  html, body { height: 100%; }
+  body { background: #07261c; -webkit-tap-highlight-color: transparent; overscroll-behavior: none; }
+  #map { position: absolute; inset: 0; }
+  .leaflet-container { background: #0b2e22; font-family: Inter, sans-serif; }
+  .view { display: none; }
+  .view.active { display: block; }
+  .sheet { transform: translateY(110%); transition: transform .28s cubic-bezier(.2,.8,.2,1); }
+  .sheet.open { transform: translateY(0); }
+  .pin { width: 34px; height: 34px; border-radius: 50% 50% 50% 0; transform: rotate(-45deg);
+         display: grid; place-items: center; border: 3px solid #fff; box-shadow: 0 4px 12px rgba(0,0,0,.35); }
+  .pin span { transform: rotate(45deg); color: #fff; font-weight: 800; font-size: 13px; }
+  .pulse { animation: pulse 1.6s ease-in-out infinite; }
+  @keyframes pulse { 0%,100% { opacity: 1 } 50% { opacity: .45 } }
+  .scan { position: relative; overflow: hidden; }
+  .scan::after { content: ''; position: absolute; left: 0; right: 0; height: 40%; top: -40%;
+    background: linear-gradient(180deg, transparent, rgba(52,210,123,.45), transparent);
+    animation: scan 1.4s linear infinite; }
+  @keyframes scan { to { top: 100%; } }
+  .safe-bottom { padding-bottom: max(env(safe-area-inset-bottom), 10px); }
+  .safe-top { padding-top: max(env(safe-area-inset-top), 10px); }
+  .no-scrollbar::-webkit-scrollbar { display: none; }
+</style>
+</head>
+<body class="font-sans text-slate-900 antialiased">
+
+<!-- Top bar -->
+<header class="safe-top fixed top-0 inset-x-0 z-[500] px-4 pb-2 pointer-events-none">
+  <div class="flex items-center justify-between pointer-events-auto">
+    <div class="flex items-center gap-2 bg-forest-950/80 backdrop-blur rounded-2xl px-3 py-2 shadow-lg">
+      <img src="/static/icon.svg" class="w-7 h-7" alt="">
+      <div class="leading-tight">
+        <div class="text-white font-extrabold text-sm tracking-tight">Hacker Environment</div>
+        <div id="aiBadge" class="text-[10px] text-forest-400 font-medium">AI checking…</div>
+      </div>
+    </div>
+    <button onclick="go('me')" class="flex items-center gap-1.5 bg-white rounded-2xl px-3 py-2 shadow-lg">
+      <span class="text-lg">🌱</span>
+      <span id="myPoints" class="font-extrabold text-forest-800 text-sm">0</span>
+    </button>
+  </div>
+</header>
+
+<main class="fixed inset-0">
+  <!-- MAP -->
+  <section id="view-map" class="view active absolute inset-0">
+    <div id="map"></div>
+    <div class="absolute left-4 right-4 bottom-28 z-[400] flex gap-2 overflow-x-auto no-scrollbar">
+      <div class="shrink-0 bg-white/95 rounded-full px-3 py-1.5 text-xs font-semibold shadow flex items-center gap-1.5">
+        <i class="w-2.5 h-2.5 rounded-full bg-rose-500"></i><span id="cntOpen">0</span> open</div>
+      <div class="shrink-0 bg-white/95 rounded-full px-3 py-1.5 text-xs font-semibold shadow flex items-center gap-1.5">
+        <i class="w-2.5 h-2.5 rounded-full bg-amber-400"></i><span id="cntClaimed">0</span> in progress</div>
+      <div class="shrink-0 bg-white/95 rounded-full px-3 py-1.5 text-xs font-semibold shadow flex items-center gap-1.5">
+        <i class="w-2.5 h-2.5 rounded-full bg-forest-500"></i><span id="cntClean">0</span> cleaned</div>
+    </div>
+    <button onclick="locateMe()" class="absolute right-4 bottom-40 z-[400] w-11 h-11 bg-white rounded-full shadow-lg grid place-items-center text-lg" aria-label="My location">📍</button>
+  </section>
+
+  <!-- REPORT -->
+  <section id="view-report" class="view absolute inset-0 overflow-y-auto bg-gradient-to-b from-forest-900 to-forest-950">
+    <div class="safe-top pt-20 px-5 pb-36 max-w-md mx-auto">
+      <h1 class="text-white text-2xl font-extrabold">Report a dirty spot</h1>
+      <p class="text-forest-100/70 text-sm mt-1">Snap 1–4 photos from different angles. AI estimates how hard the cleanup is and how many points it's worth.</p>
+
+      <div id="photoGrid" class="grid grid-cols-2 gap-3 mt-5"></div>
+
+      <label id="addPhotoBtn" class="mt-3 flex items-center justify-center gap-2 w-full rounded-2xl border-2 border-dashed border-forest-400/60 text-forest-100 py-5 font-semibold cursor-pointer active:scale-[.98] transition">
+        <span class="text-2xl">📷</span> <span id="addPhotoLabel">Take a photo</span>
+        <input id="photoInput" type="file" accept="image/*" capture="environment" class="hidden">
+      </label>
+      <label class="block text-center text-forest-400 text-xs mt-2 underline cursor-pointer">
+        or choose from gallery
+        <input id="galleryInput" type="file" accept="image/*" multiple class="hidden">
+      </label>
+
+      <div id="locBox" class="mt-5 rounded-2xl bg-white/10 text-forest-50 px-4 py-3 text-sm flex items-center gap-2">
+        <span>🛰️</span><span id="locText">Location will be captured when you submit.</span>
+      </div>
+
+      <button id="submitReport" onclick="submitReport()" disabled
+        class="mt-5 w-full rounded-2xl bg-forest-400 disabled:bg-white/15 disabled:text-white/40 text-forest-950 font-extrabold py-4 text-lg shadow-lg active:scale-[.98] transition">
+        Analyze & post
+      </button>
+    </div>
+  </section>
+
+  <!-- LEADERBOARD -->
+  <section id="view-leaders" class="view absolute inset-0 overflow-y-auto bg-slate-50">
+    <div class="bg-gradient-to-br from-forest-800 to-forest-950 safe-top pt-20 pb-16 px-5">
+      <div class="max-w-md mx-auto">
+        <h1 class="text-white text-2xl font-extrabold">Leaderboard</h1>
+        <p class="text-forest-100/70 text-sm">Top volunteers keeping our city clean.</p>
+      </div>
+    </div>
+    <div class="max-w-md mx-auto px-4 -mt-10 pb-36">
+      <div id="podium" class="grid grid-cols-3 gap-2 items-end"></div>
+      <ol id="leaderList" class="mt-4 bg-white rounded-3xl shadow-sm divide-y divide-slate-100"></ol>
+    </div>
+  </section>
+
+  <!-- ME -->
+  <section id="view-me" class="view absolute inset-0 overflow-y-auto bg-slate-50">
+    <div class="safe-top pt-20 px-4 pb-36 max-w-md mx-auto">
+      <div id="scoreCard" class="relative overflow-hidden rounded-[28px] bg-gradient-to-br from-forest-500 via-forest-700 to-forest-950 text-white p-6 shadow-xl">
+        <div class="absolute -right-10 -top-10 w-44 h-44 rounded-full bg-white/10"></div>
+        <div class="absolute -right-4 bottom-[-60px] w-40 h-40 rounded-full bg-white/5"></div>
+        <div class="text-xs uppercase tracking-[.2em] text-forest-100/80 font-semibold">Generation Score</div>
+        <div class="flex items-end gap-2 mt-1">
+          <div id="meScore" class="text-6xl font-extrabold tracking-tight">0</div>
+          <div class="pb-2 text-forest-100/80 font-semibold">pts</div>
+        </div>
+        <div class="mt-1 text-lg font-bold" id="meName">—</div>
+        <div class="inline-flex items-center gap-1.5 mt-2 bg-white/15 rounded-full px-3 py-1 text-sm font-semibold">
+          <span>🏅</span><span id="meLevel">Seedling</span>
+        </div>
+        <div class="mt-4 h-2 rounded-full bg-white/20 overflow-hidden"><div id="meBar" class="h-full bg-white rounded-full" style="width:0%"></div></div>
+        <div id="meNext" class="text-xs text-forest-100/80 mt-1.5"></div>
+        <div class="grid grid-cols-3 gap-2 mt-5 text-center">
+          <div class="bg-white/10 rounded-2xl py-2"><div id="meCleanups" class="text-xl font-extrabold">0</div><div class="text-[11px] text-forest-100/80">cleanups</div></div>
+          <div class="bg-white/10 rounded-2xl py-2"><div id="meBags" class="text-xl font-extrabold">0</div><div class="text-[11px] text-forest-100/80">bags removed</div></div>
+          <div class="bg-white/10 rounded-2xl py-2"><div id="meRank" class="text-xl font-extrabold">—</div><div class="text-[11px] text-forest-100/80">rank</div></div>
+        </div>
+      </div>
+      <button onclick="shareCard()" class="mt-4 w-full rounded-2xl bg-forest-900 text-white font-bold py-4 shadow active:scale-[.98] transition">Share my score ↗</button>
+
+      <h2 class="mt-8 mb-2 font-extrabold text-slate-800">My activity</h2>
+      <div id="myActivity" class="space-y-2"></div>
+
+      <button onclick="changeName()" class="mt-8 w-full text-sm text-slate-500 underline">Not you? Change username</button>
+    </div>
+  </section>
+</main>
+
+<!-- Bottom nav -->
+<nav class="fixed bottom-0 inset-x-0 z-[600] safe-bottom px-4">
+  <div class="max-w-md mx-auto bg-white rounded-3xl shadow-2xl flex items-center justify-around px-2 py-2 relative">
+    <button data-tab="map" onclick="go('map')" class="tab flex flex-col items-center w-16 py-1 text-[11px] font-semibold"><span class="text-xl">🗺️</span>Map</button>
+    <button data-tab="leaders" onclick="go('leaders')" class="tab flex flex-col items-center w-16 py-1 text-[11px] font-semibold"><span class="text-xl">🏆</span>Ranks</button>
+    <button onclick="go('report')" class="-mt-10 w-16 h-16 rounded-full bg-forest-500 text-white text-3xl font-light shadow-xl shadow-forest-500/40 grid place-items-center border-4 border-white active:scale-95 transition" aria-label="Report">+</button>
+    <button data-tab="me" onclick="go('me')" class="tab flex flex-col items-center w-16 py-1 text-[11px] font-semibold"><span class="text-xl">🌱</span>Me</button>
+    <button data-tab="report" onclick="go('report')" class="tab flex flex-col items-center w-16 py-1 text-[11px] font-semibold"><span class="text-xl">📷</span>Report</button>
+  </div>
+</nav>
+
+<!-- Spot sheet -->
+<div id="sheetBackdrop" onclick="closeSheet()" class="fixed inset-0 z-[700] bg-black/40 hidden"></div>
+<div id="sheet" class="sheet fixed bottom-0 inset-x-0 z-[800] max-h-[88vh] overflow-y-auto bg-white rounded-t-[28px] shadow-2xl safe-bottom">
+  <div class="max-w-md mx-auto px-5 pt-3 pb-6" id="sheetBody"></div>
+</div>
+
+<!-- Loading overlay -->
+<div id="loading" class="fixed inset-0 z-[900] bg-forest-950/90 backdrop-blur hidden">
+  <div class="h-full grid place-items-center px-8">
+    <div class="text-center">
+      <div id="loadingImg" class="scan mx-auto w-48 h-48 rounded-3xl bg-forest-800 bg-cover bg-center shadow-2xl"></div>
+      <div id="loadingText" class="text-white font-bold text-lg mt-6">AI is analyzing…</div>
+      <div class="text-forest-100/70 text-sm mt-1 pulse">Estimating trash, hazards and cleanup time</div>
+    </div>
+  </div>
+</div>
+
+<!-- Name modal -->
+<div id="nameModal" class="fixed inset-0 z-[1000] bg-forest-950/95 hidden">
+  <div class="h-full grid place-items-center px-6">
+    <div class="w-full max-w-sm text-center">
+      <img src="/static/icon.svg" class="w-20 h-20 mx-auto" alt="">
+      <h1 class="text-white text-3xl font-extrabold mt-4">Hacker Environment</h1>
+      <p class="text-forest-100/80 mt-2">Spot trash. Clean it. Earn your Generation Score.</p>
+      <input id="nameInput" maxlength="24" placeholder="Pick a username"
+        class="mt-8 w-full rounded-2xl px-4 py-4 text-lg font-semibold text-center outline-none focus:ring-4 ring-forest-400/50">
+      <button onclick="saveName()" class="mt-3 w-full rounded-2xl bg-forest-400 text-forest-950 font-extrabold py-4 text-lg">Let's clean up 🌍</button>
+    </div>
+  </div>
+</div>
+
+<!-- Toast -->
+<div id="toast" class="fixed left-1/2 -translate-x-1/2 top-24 z-[1100] max-w-[90vw] px-4 py-3 rounded-2xl shadow-xl text-sm font-semibold hidden"></div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="/static/app.js"></script>
+</body>
+</html>
