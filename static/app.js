@@ -101,6 +101,8 @@ function saveName() {
   storeSet('he_user', me);
   $('nameModal').classList.add('hidden');
   refreshPoints();
+  ping();
+  loadSpots();
 }
 function changeName() { $('nameInput').value = me || ''; askName(); }
 
@@ -121,6 +123,7 @@ function initMap() {
 function pinIcon(s) {
   let color, label;
   if (s.status === 'cleaned') { color = '#16b364'; label = '✓'; }
+  else if (s.status === 'pending') { color = '#6366f1'; label = '🔍'; }
   else if (s.status === 'claimed') { color = '#f59e0b'; label = '⏳'; }
   else { color = DIFF_COLOR[s.difficulty] || '#ef4444'; label = s.difficulty; }
   return L.divIcon({ className: '', iconSize: [34, 34], iconAnchor: [17, 34],
@@ -135,7 +138,31 @@ async function loadSpots() {
   }
   $('cntOpen').textContent = spots.filter((s) => s.status === 'open').length;
   $('cntClaimed').textContent = spots.filter((s) => s.status === 'claimed').length;
+  $('cntPending').textContent = spots.filter((s) => s.status === 'pending').length;
   $('cntClean').textContent = spots.filter((s) => s.status === 'cleaned').length;
+  const mine = spots.filter(canVerify);
+  const banner = $('verifyBanner');
+  banner.classList.toggle('hidden', !mine.length);
+  if (mine.length) {
+    banner.textContent = `🔍 ${mine.length} cleanup${mine.length > 1 ? 's' : ''} need${mine.length > 1 ? '' : 's'} your check · +10 pts`;
+    banner.onclick = () => { map.setView([mine[0].lat, mine[0].lng], 17); openSpot(mine[0].id); };
+  }
+}
+
+// Can I be the third person who checks this cleanup?
+function canVerify(s) {
+  if (!me || s.status !== 'pending') return false;
+  if (me === s.reporter || me === s.cleaner || (s.excluded || []).includes(me)) return false;
+  return s.verifier === me || s.open_to_anyone;
+}
+
+// Tell the server we're around, so we can be picked as a verifier for nearby cleanups.
+async function ping() {
+  if (!me) return;
+  const fd = new FormData();
+  fd.append('user', me);
+  try { const p = await getLocation(); fd.append('lat', p.lat); fd.append('lng', p.lng); } catch {}
+  try { await api('/api/ping', { method: 'POST', body: fd }); } catch {}
 }
 
 async function locateMe() {
@@ -168,18 +195,56 @@ function openSpot(id) {
   const hazards = s.hazards.length
     ? `<div class="mt-3 flex flex-wrap gap-1.5">${s.hazards.map((h) => `<span class="text-xs font-semibold bg-rose-50 text-rose-700 rounded-full px-2.5 py-1">⚠️ ${esc(h)}</span>`).join('')}</div>` : '';
 
+  const beforeAfter = (extra = '') => `
+        <div class="grid grid-cols-${extra ? 3 : 2} gap-2 mt-3">
+          <div><div class="text-[11px] font-bold text-slate-500 mb-1">BEFORE</div><img src="${esc(s.photos[0])}" class="rounded-xl aspect-square object-cover w-full" alt=""></div>
+          <div><div class="text-[11px] font-bold text-slate-500 mb-1">AFTER</div><img src="${esc(s.after_photo)}" class="rounded-xl aspect-square object-cover w-full" alt=""></div>
+          ${extra ? `<div><div class="text-[11px] font-bold text-slate-500 mb-1">CHECK</div><img src="${esc(extra)}" class="rounded-xl aspect-square object-cover w-full" alt=""></div>` : ''}
+        </div>`;
+  const camBtn = (label, cls, handler) => `
+      <label class="block text-center w-full rounded-2xl ${cls} font-extrabold py-4 shadow cursor-pointer active:scale-[.98] transition">
+        ${label}
+        <input type="file" accept="image/*" capture="environment" class="hidden" onchange="${handler}">
+      </label>`;
+  const note = s.verify_note ? `<div class="mt-4 rounded-2xl bg-slate-100 p-3 text-sm text-slate-600">${esc(s.verify_note)}</div>` : '';
+
   let action = '';
   if (s.status === 'cleaned') {
+    const by = s.verified_by ? `✅ Verified in person by ${esc(s.verified_by)}` : esc(s.verify_note || '');
     action = `
       <div class="mt-5 rounded-2xl bg-forest-50 p-4">
         <div class="font-extrabold text-forest-800">✨ Cleaned by ${esc(s.cleaner)}</div>
-        <div class="text-sm text-forest-800/80 mt-0.5">${esc(s.verify_comment || '')}</div>
-        <div class="grid grid-cols-2 gap-2 mt-3">
-          <div><div class="text-[11px] font-bold text-slate-500 mb-1">BEFORE</div><img src="${esc(s.photos[0])}" class="rounded-xl aspect-square object-cover w-full" alt=""></div>
-          <div><div class="text-[11px] font-bold text-slate-500 mb-1">AFTER</div><img src="${esc(s.after_photo)}" class="rounded-xl aspect-square object-cover w-full" alt=""></div>
-        </div>
+        <div class="text-sm text-forest-800/80 mt-0.5">${by}</div>
+        ${beforeAfter(s.verify_photo)}
         <div class="text-sm font-bold text-forest-700 mt-3">+${s.awarded} pts · ${s.percent_cleaned}% clean</div>
-      </div>`;
+      </div>
+      ${s.cleaner !== me ? `<div class="mt-3">${camBtn('🚩 Still dirty? Report it', 'bg-white border-2 border-rose-200 text-rose-600 text-base', `submitFlag('${s.id}', this)`)}</div>
+      <p class="text-xs text-center text-slate-500 mt-2">Be at the spot. If the AI sees trash, the cleaner loses the points and you get +10.</p>` : ''}`;
+  } else if (s.status === 'pending') {
+    if (canVerify(s)) {
+      action = `
+        <div class="mt-5 rounded-2xl bg-indigo-50 p-4">
+          <div class="font-extrabold text-indigo-900">🔍 You were picked to check this cleanup</div>
+          <div class="text-sm text-indigo-900/80 mt-0.5">${esc(s.cleaner)} says it's clean. Go there and see for yourself. Their ${s.pending_points} pts are on hold until you do.</div>
+          ${beforeAfter()}
+        </div>
+        <a href="https://www.google.com/maps/dir/?api=1&destination=${s.lat},${s.lng}" target="_blank" rel="noopener"
+           class="mt-3 block text-center w-full rounded-2xl bg-slate-100 font-bold py-3.5">🧭 Directions</a>
+        <div class="grid grid-cols-2 gap-2 mt-2">
+          ${camBtn('✅ It\'s clean', 'bg-forest-500 text-white', `submitVerify('${s.id}', 'clean', this)`)}
+          ${camBtn('🚫 Still dirty', 'bg-rose-500 text-white', `submitVerify('${s.id}', 'dirty', this)`)}
+        </div>
+        <p class="text-xs text-center text-slate-500 mt-2">Take a photo at the spot either way. You get +10 pts for checking.</p>`;
+    } else {
+      const who = s.cleaner === me ? 'Your' : `${esc(s.cleaner)}'s`;
+      const waiting = s.verifier && !s.open_to_anyone ? esc(s.verifier) : 'a nearby volunteer';
+      action = `
+        <div class="mt-5 rounded-2xl bg-indigo-50 p-4">
+          <div class="font-extrabold text-indigo-900">🔍 Waiting for an in-person check</div>
+          <div class="text-sm text-indigo-900/80 mt-0.5">${who} ${s.pending_points} pts are on hold until ${waiting} confirms the spot is clean.</div>
+          ${beforeAfter()}
+        </div>`;
+    }
   } else if (s.reporter === me) {
     action = `<div class="mt-5 rounded-2xl bg-slate-100 p-4 text-sm text-slate-600 font-medium">You reported this spot. ${s.status === 'claimed' ? esc(s.claimed_by) + ' is cleaning it now 🙌' : 'Waiting for a volunteer to pick it up.'}</div>`;
   } else if (s.status === 'claimed' && s.claimed_by === me) {
@@ -217,7 +282,61 @@ function openSpot(id) {
     </div>
     ${hazards}
     <div class="text-xs text-slate-400 mt-3">Reported by ${esc(s.reporter)} · ${timeAgo(s.created_at)}${s.ai_source === 'demo' ? ' · demo score' : ''}</div>
+    ${s.status === 'open' ? note : ''}
     ${action}`);
+}
+
+// Shared: compress photo, get GPS, POST it with extra fields.
+async function sendPhoto(url, input, fields, loadingText) {
+  const file = input.files[0];
+  input.value = '';
+  if (!file) return null;
+  let blob, pos;
+  try {
+    blob = await compress(file);
+    showLoading('Checking your location…', URL.createObjectURL(blob));
+    pos = await getLocation();
+  } catch (e) { hideLoading(); toast(e.message, 'err'); return null; }
+  showLoading(loadingText, URL.createObjectURL(blob));
+  const fd = new FormData();
+  fd.append('user', me);
+  fd.append('lat', pos.lat);
+  fd.append('lng', pos.lng);
+  for (const [k, v] of Object.entries(fields)) fd.append(k, v);
+  fd.append('photo', blob, 'photo.jpg');
+  try {
+    const r = await api(url, { method: 'POST', body: fd });
+    hideLoading();
+    await loadSpots();
+    refreshPoints();
+    return r;
+  } catch (e) { hideLoading(); toast(e.message, 'err'); return null; }
+}
+
+async function submitVerify(id, verdict, input) {
+  const r = await sendPhoto(`/api/spots/${id}/verify`, input, { verdict }, 'Comparing with the cleanup photo…');
+  if (!r) return;
+  const msg = {
+    confirmed: ['✅', 'Cleanup confirmed!', `${esc(r.spot.cleaner)} got their points. Thanks for keeping it honest.`],
+    rejected: ['🚫', 'Marked as still dirty', 'The spot is back on the map for someone else to clean.'],
+    disputed: ['🤔', 'Second opinion needed', "The AI thinks it looks clean, so we're asking one more person to check."],
+  }[r.result];
+  openSheet(`
+    <div class="mx-auto w-10 h-1.5 rounded-full bg-slate-200 mb-6"></div>
+    <div class="text-center">
+      <div class="text-6xl">${msg[0]}</div>
+      <div class="text-2xl font-extrabold text-slate-800 mt-3">${msg[1]}</div>
+      <div class="text-slate-600 mt-2">${msg[2]}</div>
+      ${r.reward ? `<div class="text-3xl font-extrabold text-forest-700 mt-4">+${r.reward} pts</div>` : ''}
+      <button onclick="closeSheet()" class="mt-6 w-full rounded-2xl bg-forest-900 text-white font-bold py-4">Done</button>
+    </div>`);
+}
+
+async function submitFlag(id, input) {
+  const r = await sendPhoto(`/api/spots/${id}/flag`, input, {}, 'AI is looking for trash…');
+  if (!r) return;
+  toast(`Thanks! Spot is back on the map${r.reward ? ` · +${r.reward} pts` : ''}`);
+  openSpot(id);
 }
 
 async function claim(id) {
@@ -232,38 +351,22 @@ async function claim(id) {
 }
 
 async function submitClean(id, input) {
-  const file = input.files[0];
-  input.value = '';
-  if (!file) return;
-  let blob, pos;
-  try {
-    blob = await compress(file);
-    showLoading('Checking your location…', URL.createObjectURL(blob));
-    pos = await getLocation();
-  } catch (e) { hideLoading(); return toast(e.message, 'err'); }
-  showLoading('AI is verifying your cleanup…', URL.createObjectURL(blob));
-  const fd = new FormData();
-  fd.append('user', me);
-  fd.append('lat', pos.lat);
-  fd.append('lng', pos.lng);
-  fd.append('photo', blob, 'after.jpg');
-  try {
-    const r = await api(`/api/spots/${id}/clean`, { method: 'POST', body: fd });
-    hideLoading();
-    await loadSpots();
-    refreshPoints();
-    celebrate(r);
-  } catch (e) { hideLoading(); toast(e.message, 'err'); }
+  const r = await sendPhoto(`/api/spots/${id}/clean`, input, {}, 'AI is checking your cleanup…');
+  if (r) celebrate(r);
 }
 
 function celebrate(r) {
+  const head = r.pending
+    ? `<div class="text-4xl font-extrabold text-indigo-700 mt-3">${r.earned} pts on hold</div>
+       <div class="text-slate-600 mt-2">The AI likes it! ${r.verifier ? `<b>${esc(r.verifier)}</b> was picked` : 'A nearby volunteer will be asked'} to check it in person. Your points unlock once they confirm.</div>`
+    : `<div class="text-4xl font-extrabold text-forest-700 mt-3">+${r.awarded} pts</div>
+       <div class="text-slate-600 mt-2">Trusted volunteer: no in-person check needed this time.</div>`;
   openSheet(`
     <div class="mx-auto w-10 h-1.5 rounded-full bg-slate-200 mb-6"></div>
     <div class="text-center">
-      <div class="text-6xl">🎉</div>
-      <div class="text-4xl font-extrabold text-forest-700 mt-3">+${r.awarded} pts</div>
-      <div class="text-slate-600 mt-2">${esc(r.verification.comment)}</div>
-      <div class="text-sm text-slate-500 mt-1">${r.verification.percent_cleaned}% cleaned${r.capped ? ' · daily cap reached' : ''}</div>
+      <div class="text-6xl">${r.pending ? '🔍' : '🎉'}</div>
+      ${head}
+      <div class="text-sm text-slate-500 mt-1">AI: ${r.verification.percent_cleaned}% cleaned · ${esc(r.verification.comment)}</div>
       <div class="grid grid-cols-2 gap-2 mt-5">
         <img src="${esc(r.spot.photos[0])}" class="rounded-2xl aspect-square object-cover w-full" alt="">
         <img src="${esc(r.spot.after_photo)}" class="rounded-2xl aspect-square object-cover w-full" alt="">
@@ -347,7 +450,7 @@ async function loadLeaders() {
       <div class="w-7 text-center font-extrabold text-slate-400">${i + 1}</div>
       <div class="flex-1 min-w-0">
         <div class="font-bold truncate">${esc(r.user)}${r.user === me ? ' (you)' : ''}</div>
-        <div class="text-xs text-slate-500">${esc(r.level)} · ${r.cleanups} cleanup${r.cleanups === 1 ? '' : 's'}</div>
+        <div class="text-xs text-slate-500">${esc(r.level)} · ${r.cleanups} cleanup${r.cleanups === 1 ? '' : 's'} · ${r.verifications} check${r.verifications === 1 ? '' : 's'}</div>
       </div>
       <div class="font-extrabold text-forest-700">${r.points}</div>
     </li>`).join('')
@@ -371,10 +474,17 @@ async function loadMe() {
   const { floor, next } = p.level;
   $('meBar').style.width = next ? `${Math.round(((p.points - floor) / (next - floor)) * 100)}%` : '100%';
   $('meNext').textContent = next ? `${next - p.points} pts to next level` : 'Max level reached 🌍';
+  $('meTrust').innerHTML = [
+    p.trusted ? '🛡️ Trusted volunteer' : p.strikes ? `⚠️ ${p.strikes} failed check${p.strikes > 1 ? 's' : ''}` : '🌱 Building trust',
+    `🔍 ${p.verifications} check${p.verifications === 1 ? '' : 's'} done`,
+    p.on_hold ? `⏳ ${p.on_hold} pts on hold` : '',
+  ].filter(Boolean).map((t) => `<span class="bg-white/15 rounded-full px-3 py-1">${t}</span>`).join('');
 
-  const mine = spots.filter((s) => s.reporter === me || s.cleaner === me || s.claimed_by === me);
+  const mine = spots.filter((s) => s.reporter === me || s.cleaner === me || s.claimed_by === me || canVerify(s));
   $('myActivity').innerHTML = mine.length ? mine.map((s) => {
-    const role = s.cleaner === me ? `Cleaned · +${s.awarded} pts` : s.reporter === me ? 'Reported' : 'Claimed: go clean it!';
+    const role = canVerify(s) ? '🔍 Needs your check: +10 pts'
+      : s.cleaner === me ? (s.status === 'pending' ? `Cleaned · ${s.pending_points} pts on hold` : `Cleaned · +${s.awarded} pts`)
+      : s.reporter === me ? 'Reported' : 'Claimed: go clean it!';
     return `<button onclick="go('map'); openSpot('${s.id}')" class="w-full flex items-center gap-3 bg-white rounded-2xl p-2.5 shadow-sm text-left">
       <img src="${esc(s.photos[0])}" class="w-14 h-14 rounded-xl object-cover" alt="">
       <div class="flex-1 min-w-0"><div class="font-bold text-sm truncate">${esc(s.summary)}</div>
@@ -445,7 +555,7 @@ async function boot() {
   $('galleryInput').addEventListener('change', (e) => { addFiles([...e.target.files]); e.target.value = ''; });
   renderPending();
   go('map');
-  if (!me) askName(); else refreshPoints();
+  if (!me) askName(); else { refreshPoints(); ping(); }
   $('nameInput').addEventListener('keydown', (e) => { if (e.key === 'Enter') saveName(); });
   api('/api/status').then((s) => {
     $('aiBadge').textContent = s.ai === 'gemini' ? 'AI online · Gemini' : 'Demo mode (no AI key)';

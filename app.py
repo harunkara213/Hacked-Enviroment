@@ -1,10 +1,14 @@
 """Hacker Environment - report litter, clean it up, earn points.
 
+Flow: report -> claim -> clean (AI pre-check, points ON HOLD) -> a random nearby
+person checks it in person -> points paid. Anyone can later flag "still dirty".
+
 Run:  .venv/bin/uvicorn app:app --reload --host 0.0.0.0 --port 8000
 """
 import json
 import math
 import os
+import random
 import sqlite3
 import time
 import uuid
@@ -33,6 +37,14 @@ MAX_CLEAN_DISTANCE_M = float(os.getenv("MAX_CLEAN_DISTANCE_M", "250"))
 MIN_PERCENT_CLEANED = 60
 ALLOWED_MIME = {"image/jpeg", "image/png", "image/webp"}
 
+VERIFIER_RADIUS_M = 5000           # prefer verifiers who were seen this close to the spot
+VERIFIER_WINDOW_S = 6 * 3600       # assigned verifier has this long before anyone nearby may verify
+PENDING_TIMEOUT_S = 48 * 3600      # nobody verified -> cleaner gets half, from the AI check alone
+VERIFY_REWARD = 10
+FLAG_REWARD = 10
+TRUSTED_MIN_CLEANUPS = 3           # after this many confirmed cleanups with no strikes...
+TRUSTED_SKIP_RATE = float(os.getenv("TRUSTED_SKIP_RATE", "0.8"))  # ...only 20% get spot-checked
+
 LEVELS = [  # (min points, title)
     (0, "Seedling"),
     (100, "Sprout"),
@@ -49,6 +61,13 @@ def db():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
+
+
+SPOT_EXTRA_COLUMNS = {
+    "pending_points": "INTEGER", "verifier": "TEXT", "verifier_assigned_at": "REAL",
+    "excluded": "TEXT", "verified_by": "TEXT", "verified_at": "REAL",
+    "verify_photo": "TEXT", "verify_note": "TEXT",
+}
 
 
 def init_db():
@@ -71,7 +90,14 @@ def init_db():
             user TEXT NOT NULL, kind TEXT NOT NULL, points INTEGER NOT NULL,
             spot_id TEXT, ts REAL NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS users (
+            name TEXT PRIMARY KEY, lat REAL, lng REAL, seen REAL
+        );
         """)
+        have = {r[1] for r in c.execute("PRAGMA table_info(spots)")}
+        for col, typ in SPOT_EXTRA_COLUMNS.items():
+            if col not in have:
+                c.execute(f"ALTER TABLE spots ADD COLUMN {col} {typ}")
 
 
 init_db()
@@ -92,6 +118,12 @@ def distance_m(lat1, lng1, lat2, lng2) -> float:
     dp, dl = p2 - p1, math.radians(lng2 - lng1)
     a = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
     return 2 * r * math.asin(math.sqrt(a))
+
+
+def require_on_site(spot, lat, lng, what="photo"):
+    dist = distance_m(lat, lng, spot["lat"], spot["lng"])
+    if dist > MAX_CLEAN_DISTANCE_M:
+        raise HTTPException(403, f"You're {int(dist)} m away. Take the {what} at the spot.")
 
 
 async def read_photo(f: UploadFile) -> tuple[bytes, str]:
@@ -121,16 +153,75 @@ def spot_out(r: sqlite3.Row) -> dict:
     d = dict(r)
     d["photos"] = ["/uploads/" + p for p in json.loads(d["photos"])]
     d["hazards"] = json.loads(d["hazards"] or "[]")
-    if d["after_photo"]:
-        d["after_photo"] = "/uploads/" + d["after_photo"]
+    d["excluded"] = json.loads(d["excluded"] or "[]")
+    for k in ("after_photo", "verify_photo"):
+        if d[k]:
+            d[k] = "/uploads/" + d[k]
+    d["open_to_anyone"] = d["status"] == "pending" and (
+        d["verifier"] is None or time.time() - (d["verifier_assigned_at"] or 0) > VERIFIER_WINDOW_S)
     return d
+
+
+def get_spot(c, spot_id):
+    s = c.execute("SELECT * FROM spots WHERE id=?", (spot_id,)).fetchone()
+    if not s:
+        raise HTTPException(404, "Spot not found.")
+    return s
+
+
+def seen(c, user, lat=None, lng=None):
+    """Remember where users were last seen, so verifiers can be picked nearby."""
+    if lat is None:
+        c.execute("INSERT INTO users (name, seen) VALUES (?,?) ON CONFLICT(name) DO UPDATE SET seen=excluded.seen",
+                  (user, time.time()))
+    else:
+        c.execute("""INSERT INTO users (name, lat, lng, seen) VALUES (?,?,?,?)
+                     ON CONFLICT(name) DO UPDATE SET lat=excluded.lat, lng=excluded.lng, seen=excluded.seen""",
+                  (user, lat, lng, time.time()))
 
 
 def points_today(c, user: str) -> int:
     since = time.time() - 24 * 3600
-    row = c.execute("SELECT COALESCE(SUM(points),0) FROM events WHERE user=? AND ts>?",
+    row = c.execute("SELECT COALESCE(SUM(points),0) FROM events WHERE user=? AND ts>? AND points>0",
                     (user, since)).fetchone()
     return row[0]
+
+
+def award(c, user, points, kind, spot_id) -> int:
+    """Insert a points event. Positive points respect the daily cap."""
+    if points > 0:
+        points = max(0, min(points, DAILY_POINT_CAP - points_today(c, user)))
+    c.execute("INSERT INTO events VALUES (?,?,?,?,?)", (user, kind, points, spot_id, time.time()))
+    return points
+
+
+def trust_of(c, user) -> dict:
+    r = c.execute("""SELECT COALESCE(SUM(kind='clean'),0) AS cleanups,
+                            COALESCE(SUM(kind IN ('rejected','revoke')),0) AS strikes
+                     FROM events WHERE user=?""", (user,)).fetchone()
+    trusted = r["cleanups"] >= TRUSTED_MIN_CLEANUPS and r["strikes"] == 0
+    return {"cleanups": r["cleanups"], "strikes": r["strikes"], "trusted": trusted}
+
+
+def pick_verifier(c, spot, exclude: set[str]):
+    """Random user (not reporter/cleaner/excluded), preferring people seen near the spot."""
+    week = time.time() - 7 * 24 * 3600
+    rows = c.execute("SELECT name, lat, lng FROM users WHERE seen > ?", (week,)).fetchall()
+    rows = [r for r in rows if r["name"] not in exclude]
+    near = [r for r in rows if r["lat"] is not None
+            and distance_m(r["lat"], r["lng"], spot["lat"], spot["lng"]) <= VERIFIER_RADIUS_M]
+    pool = near or rows
+    return random.choice(pool)["name"] if pool else None
+
+
+def settle_expired(c):
+    """Pending too long with nobody verifying: pay half, based on the AI check alone."""
+    cutoff = time.time() - PENDING_TIMEOUT_S
+    for s in c.execute("SELECT * FROM spots WHERE status='pending' AND cleaned_at < ?", (cutoff,)).fetchall():
+        got = award(c, s["cleaner"], (s["pending_points"] or 0) // 2, "clean", s["id"])
+        c.execute("""UPDATE spots SET status='cleaned', awarded=?, verified_by=?, verified_at=?,
+                     verify_note=? WHERE id=?""",
+                  (got, None, time.time(), "No one verified in 48h: half points from the AI check.", s["id"]))
 
 
 def level_for(points: int) -> dict:
@@ -164,9 +255,19 @@ def status():
     return {"ai": "gemini" if ai._get_client() else "demo", "model": ai.MODEL, "last_error": ai.LAST_ERROR}
 
 
+@app.post("/api/ping")
+def ping(user: str = Form(...), lat: float | None = Form(None), lng: float | None = Form(None)):
+    """App open: remember the user (and where they are) so they can be picked as a verifier."""
+    user = clean_name(user)
+    with closing(db()) as c, c:
+        seen(c, user, lat, lng)
+    return {"ok": True}
+
+
 @app.get("/api/spots")
 def list_spots():
-    with closing(db()) as c:
+    with closing(db()) as c, c:
+        settle_expired(c)
         rows = c.execute("SELECT * FROM spots ORDER BY created_at DESC").fetchall()
     return [spot_out(r) for r in rows]
 
@@ -192,16 +293,15 @@ async def report_spot(
     spot_id = uuid.uuid4().hex[:10]
     names = [save_photo(d, m) for d, m in images]
     with closing(db()) as c, c:
+        seen(c, user, lat, lng)
         c.execute("""INSERT INTO spots (id, lat, lng, reporter, photos, difficulty, bags, minutes,
                      hazards, summary, points, ai_source, created_at)
                      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                   (spot_id, lat, lng, user, json.dumps(names), result["difficulty"],
                    result["estimated_bags"], result["estimated_minutes"], json.dumps(result["hazards"]),
                    result["summary"], result["points"], result["source"], time.time()))
-        # small reward for reporting, also capped
-        bonus = min(5, max(0, DAILY_POINT_CAP - points_today(c, user)))
-        c.execute("INSERT INTO events VALUES (?,?,?,?,?)", (user, "report", bonus, spot_id, time.time()))
-        row = c.execute("SELECT * FROM spots WHERE id=?", (spot_id,)).fetchone()
+        bonus = award(c, user, 5, "report", spot_id)
+        row = get_spot(c, spot_id)
     return {"spot": spot_out(row), "report_bonus": bonus}
 
 
@@ -209,20 +309,19 @@ async def report_spot(
 def claim_spot(spot_id: str, user: str = Form(...)):
     user = clean_name(user)
     with closing(db()) as c, c:
-        s = c.execute("SELECT * FROM spots WHERE id=?", (spot_id,)).fetchone()
-        if not s:
-            raise HTTPException(404, "Spot not found.")
-        if s["status"] == "cleaned":
-            raise HTTPException(409, "This spot is already clean.")
+        s = get_spot(c, spot_id)
+        if s["status"] in ("pending", "cleaned"):
+            raise HTTPException(409, "This spot has already been cleaned.")
         if s["reporter"] == user:
             raise HTTPException(403, "You can't clean a spot you reported. Let someone else take it!")
         if s["status"] == "claimed" and s["claimed_by"] != user:
             # claims expire after 24h so spots don't get stuck
             if time.time() - (s["claimed_at"] or 0) < 24 * 3600:
                 raise HTTPException(409, f"{s['claimed_by']} is already on it.")
+        seen(c, user)
         c.execute("UPDATE spots SET status='claimed', claimed_by=?, claimed_at=? WHERE id=?",
                   (user, time.time(), spot_id))
-        row = c.execute("SELECT * FROM spots WHERE id=?", (spot_id,)).fetchone()
+        row = get_spot(c, spot_id)
     return spot_out(row)
 
 
@@ -236,18 +335,14 @@ async def clean_spot(
 ):
     user = clean_name(user)
     with closing(db()) as c:
-        s = c.execute("SELECT * FROM spots WHERE id=?", (spot_id,)).fetchone()
-    if not s:
-        raise HTTPException(404, "Spot not found.")
-    if s["status"] == "cleaned":
-        raise HTTPException(409, "This spot is already clean.")
+        s = get_spot(c, spot_id)
+    if s["status"] in ("pending", "cleaned"):
+        raise HTTPException(409, "This spot has already been cleaned.")
     if s["reporter"] == user:
         raise HTTPException(403, "You can't clean a spot you reported.")
     if s["status"] != "claimed" or s["claimed_by"] != user:
         raise HTTPException(409, "Claim this spot first.")
-    dist = distance_m(lat, lng, s["lat"], s["lng"])
-    if dist > MAX_CLEAN_DISTANCE_M:
-        raise HTTPException(403, f"You're {int(dist)} m away. Take the after photo at the spot.")
+    require_on_site(s, lat, lng, "after photo")
 
     after = await read_photo(photo)
     before = [load_photo(p) for p in json.loads(s["photos"])]
@@ -258,20 +353,134 @@ async def clean_spot(
     if v["percent_cleaned"] < MIN_PERCENT_CLEANED:
         raise HTTPException(422, f"Only about {v['percent_cleaned']}% looks clean. " + v["comment"])
 
+    earned = round(s["points"] * v["percent_cleaned"] / 100)
     with closing(db()) as c, c:
-        earned = round(s["points"] * v["percent_cleaned"] / 100)
-        awarded = max(0, min(earned, DAILY_POINT_CAP - points_today(c, user)))
+        seen(c, user, lat, lng)
         name = save_photo(*after)
-        cur = c.execute("""UPDATE spots SET status='cleaned', cleaner=?, after_photo=?, verify_comment=?,
-                           percent_cleaned=?, awarded=?, cleaned_at=?
+        t = trust_of(c, user)
+        skip = t["trusted"] and random.random() < TRUSTED_SKIP_RATE
+        if skip:
+            verifier, status_, awarded = None, "cleaned", None
+        else:
+            verifier = pick_verifier(c, s, {s["reporter"], user})
+            status_, awarded = "pending", None
+        cur = c.execute("""UPDATE spots SET status=?, cleaner=?, after_photo=?, verify_comment=?,
+                           percent_cleaned=?, pending_points=?, cleaned_at=?, verifier=?,
+                           verifier_assigned_at=?, excluded=?
                            WHERE id=? AND status='claimed' AND claimed_by=?""",
-                        (user, name, v["comment"], v["percent_cleaned"], awarded, time.time(), spot_id, user))
+                        (status_, user, name, v["comment"], v["percent_cleaned"], earned, time.time(),
+                         verifier, time.time() if verifier else None, json.dumps([]), spot_id, user))
         if cur.rowcount != 1:
             raise HTTPException(409, "Spot changed while verifying. Try again.")
-        c.execute("INSERT INTO events VALUES (?,?,?,?,?)", (user, "clean", awarded, spot_id, time.time()))
-        row = c.execute("SELECT * FROM spots WHERE id=?", (spot_id,)).fetchone()
-    return {"spot": spot_out(row), "awarded": awarded, "earned": earned,
-            "capped": awarded < earned, "verification": v}
+        if skip:
+            awarded = award(c, user, earned, "clean", spot_id)
+            c.execute("UPDATE spots SET awarded=?, verified_at=?, verify_note=? WHERE id=?",
+                      (awarded, time.time(), "Trusted volunteer: spot-check skipped.", spot_id))
+        row = get_spot(c, spot_id)
+    return {"spot": spot_out(row), "earned": earned, "awarded": awarded,
+            "pending": not skip, "verifier": verifier, "verification": v}
+
+
+@app.post("/api/spots/{spot_id}/verify")
+async def verify_spot(
+    spot_id: str,
+    user: str = Form(...),
+    verdict: str = Form(...),          # "clean" | "dirty"
+    lat: float = Form(...),
+    lng: float = Form(...),
+    photo: UploadFile = File(...),
+):
+    """A third person checks the cleanup in person. Only then are points paid."""
+    user = clean_name(user)
+    if verdict not in ("clean", "dirty"):
+        raise HTTPException(400, "Verdict must be clean or dirty.")
+    with closing(db()) as c:
+        s = get_spot(c, spot_id)
+    if s["status"] != "pending":
+        raise HTTPException(409, "This spot isn't waiting for verification.")
+    excluded = set(json.loads(s["excluded"] or "[]"))
+    if user in (s["reporter"], s["cleaner"]):
+        raise HTTPException(403, "Someone else has to verify this one. That's the point!")
+    if user in excluded:
+        raise HTTPException(403, "You already checked this spot.")
+    out = spot_out(s)
+    if s["verifier"] != user and not out["open_to_anyone"]:
+        raise HTTPException(403, f"{s['verifier']} was picked to verify this spot.")
+    require_on_site(s, lat, lng, "verification photo")
+
+    check = await read_photo(photo)
+    before = [load_photo(p) for p in json.loads(s["photos"])]
+    v = ai.verify_cleanup(before, check)
+    if not v["same_place"]:
+        raise HTTPException(422, "Your photo doesn't look like the same place. Take it where the trash was.")
+
+    with closing(db()) as c, c:
+        seen(c, user, lat, lng)
+        name = save_photo(*check)
+        if verdict == "clean":
+            got = award(c, s["cleaner"], s["pending_points"] or 0, "clean", spot_id)
+            reward = award(c, user, VERIFY_REWARD, "verify", spot_id)
+            c.execute("""UPDATE spots SET status='cleaned', awarded=?, verified_by=?, verified_at=?,
+                         verify_photo=?, verify_note=? WHERE id=? AND status='pending'""",
+                      (got, user, time.time(), name, f"Confirmed clean by {user}.", spot_id))
+            result = "confirmed"
+        elif v["percent_cleaned"] >= 85:
+            # Human says dirty but the AI sees it clean: don't punish yet, ask someone else.
+            excluded.add(user)
+            nxt = pick_verifier(c, s, excluded | {s["reporter"], s["cleaner"]})
+            c.execute("""UPDATE spots SET verifier=?, verifier_assigned_at=?, excluded=? WHERE id=?""",
+                      (nxt, time.time() if nxt else None, json.dumps(sorted(excluded)), spot_id))
+            reward, result = 0, "disputed"
+        else:
+            award(c, s["cleaner"], 0, "rejected", spot_id)
+            reward = award(c, user, VERIFY_REWARD, "verify", spot_id)
+            c.execute("""UPDATE spots SET status='open', claimed_by=NULL, claimed_at=NULL, cleaner=NULL,
+                         after_photo=NULL, pending_points=NULL, verifier=NULL, verifier_assigned_at=NULL,
+                         excluded=NULL, verify_photo=?, verify_note=? WHERE id=?""",
+                      (name, f"{user} found it still dirty. Back on the map!", spot_id))
+            result = "rejected"
+        row = get_spot(c, spot_id)
+    return {"spot": spot_out(row), "result": result, "reward": reward}
+
+
+@app.post("/api/spots/{spot_id}/flag")
+async def flag_spot(
+    spot_id: str,
+    user: str = Form(...),
+    lat: float = Form(...),
+    lng: float = Form(...),
+    photo: UploadFile = File(...),
+):
+    """Anyone passing by can report a 'cleaned' spot as still dirty. Points are taken back."""
+    user = clean_name(user)
+    with closing(db()) as c:
+        s = get_spot(c, spot_id)
+    if s["status"] != "cleaned":
+        raise HTTPException(409, "Only cleaned spots can be flagged.")
+    if user == s["cleaner"]:
+        raise HTTPException(403, "You cleaned this one.")
+    require_on_site(s, lat, lng, "photo")
+    img = await read_photo(photo)
+    a = ai.assess_spot([img])
+    if not a["is_litter"]:
+        raise HTTPException(422, "The AI doesn't see litter in your photo. Looks clean!")
+
+    with closing(db()) as c, c:
+        seen(c, user, lat, lng)
+        name = save_photo(*img)
+        if s["awarded"]:
+            award(c, s["cleaner"], -s["awarded"], "revoke", spot_id)
+        else:
+            award(c, s["cleaner"], 0, "revoke", spot_id)
+        reward = award(c, user, FLAG_REWARD, "flag", spot_id)
+        photos = json.loads(s["photos"]) + [name]
+        c.execute("""UPDATE spots SET status='open', photos=?, claimed_by=NULL, claimed_at=NULL, cleaner=NULL,
+                     after_photo=NULL, pending_points=NULL, awarded=NULL, verifier=NULL,
+                     verifier_assigned_at=NULL, excluded=NULL, verified_by=NULL, verified_at=NULL,
+                     verify_photo=NULL, verify_note=? WHERE id=?""",
+                  (json.dumps(photos), f"{user} flagged it as still dirty. Points were taken back.", spot_id))
+        row = get_spot(c, spot_id)
+    return {"spot": spot_out(row), "reward": reward}
 
 
 @app.get("/api/leaderboard")
@@ -279,7 +488,7 @@ def leaderboard():
     with closing(db()) as c:
         rows = c.execute("""
             SELECT user, SUM(points) AS points,
-                   SUM(kind='clean') AS cleanups, SUM(kind='report') AS reports
+                   SUM(kind='clean') AS cleanups, SUM(kind='verify') AS verifications
             FROM events GROUP BY user ORDER BY points DESC, cleanups DESC LIMIT 50""").fetchall()
     return [{**dict(r), "level": level_for(r["points"])["title"]} for r in rows]
 
@@ -290,11 +499,19 @@ def profile(name: str):
     with closing(db()) as c:
         r = c.execute("""SELECT COALESCE(SUM(points),0) AS points,
                                 COALESCE(SUM(kind='clean'),0) AS cleanups,
-                                COALESCE(SUM(kind='report'),0) AS reports
+                                COALESCE(SUM(kind='report'),0) AS reports,
+                                COALESCE(SUM(kind='verify'),0) AS verifications
                          FROM events WHERE user=?""", (name,)).fetchone()
-        bags = c.execute("SELECT COALESCE(SUM(bags),0) FROM spots WHERE cleaner=?", (name,)).fetchone()[0]
+        bags = c.execute("SELECT COALESCE(SUM(bags),0) FROM spots WHERE cleaner=? AND status='cleaned'",
+                         (name,)).fetchone()[0]
+        on_hold = c.execute("SELECT COALESCE(SUM(pending_points),0) FROM spots WHERE cleaner=? AND status='pending'",
+                            (name,)).fetchone()[0]
+        to_verify = [x[0] for x in c.execute(
+            "SELECT id FROM spots WHERE status='pending' AND verifier=?", (name,)).fetchall()]
+        trust = trust_of(c, name)
         ranked = c.execute("SELECT user FROM events GROUP BY user ORDER BY SUM(points) DESC").fetchall()
     users = [x[0] for x in ranked]
     rank = users.index(name) + 1 if name in users else None
     return {"user": name, **dict(r), "bags": bags, "rank": rank, "total_users": len(users),
-            "level": level_for(r["points"])}
+            "level": level_for(r["points"]), "on_hold": on_hold, "to_verify": to_verify,
+            "trusted": trust["trusted"], "strikes": trust["strikes"]}

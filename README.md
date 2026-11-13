@@ -13,15 +13,20 @@ Built at HackED Beta 2026.
 1. **Report**: take 1–4 photos of litter. The app grabs your GPS location and pins it on the map.
 2. **Score**: Gemini vision estimates difficulty (1–5), garbage bags needed, minutes and hazards. That becomes the spot's point value.
 3. **Claim and clean**: a volunteer claims the spot, cleans it, and takes an after photo on site.
-4. **Verify**: AI compares before and after (same place? how much is gone?) and awards points.
-5. **Compete**: leaderboard, levels (Seedling → Planet Hero) and a shareable score card.
+4. **AI pre-check**: AI compares before and after (same place? how much is gone?). If it passes, the points go **on hold**.
+5. **In-person check**: a random user near the spot (not the reporter or cleaner) is picked to go look. Their confirmation releases the points, and they earn +10 for checking.
+6. **Compete**: leaderboard, levels (Seedling → Planet Hero) and a shareable score card.
 
 ### Anti-cheat
-- You can't clean a spot you reported.
-- The after photo must be taken within 250 m of the spot.
-- AI must confirm it's the same place and at least 60% cleaned.
-- Points are capped per user per day.
-- No cash rewards, so there's no incentive to litter on purpose.
+- You can't clean or verify a spot you reported, and you can't verify your own cleanup.
+- Every after photo and check photo must be taken within 250 m of the spot.
+- AI must confirm it's the same place and at least 60% cleaned before a human is even asked.
+- The verifier is picked at random, so you can't send a friend. If nobody checks within 6 h, any nearby user can.
+- If a verifier says "dirty" but the AI sees it clean, a second verifier is asked instead of punishing the cleaner.
+- Anyone passing by can flag a cleaned spot as still dirty: the cleaner loses the points and gets a strike.
+- **Trust score:** after 3 confirmed cleanups with no strikes, only 1 in 5 cleanups gets an in-person check.
+- Nobody verifies within 48 h: the cleaner gets half the points from the AI check alone.
+- Points are capped per user per day, and there are no cash rewards, so there's no incentive to litter on purpose.
 
 ## Tech
 

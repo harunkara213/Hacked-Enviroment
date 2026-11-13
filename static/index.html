@@ -73,8 +73,11 @@ tailwind.config = { theme: { extend: {
       <div class="shrink-0 bg-white/95 rounded-full px-3 py-1.5 text-xs font-semibold shadow flex items-center gap-1.5">
         <i class="w-2.5 h-2.5 rounded-full bg-amber-400"></i><span id="cntClaimed">0</span> in progress</div>
       <div class="shrink-0 bg-white/95 rounded-full px-3 py-1.5 text-xs font-semibold shadow flex items-center gap-1.5">
+        <i class="w-2.5 h-2.5 rounded-full bg-indigo-500"></i><span id="cntPending">0</span> verifying</div>
+      <div class="shrink-0 bg-white/95 rounded-full px-3 py-1.5 text-xs font-semibold shadow flex items-center gap-1.5">
         <i class="w-2.5 h-2.5 rounded-full bg-forest-500"></i><span id="cntClean">0</span> cleaned</div>
     </div>
+    <button id="verifyBanner" class="hidden absolute left-4 right-4 top-24 z-[450] bg-indigo-600 text-white font-bold text-sm rounded-2xl px-4 py-3 shadow-xl text-left pulse"></button>
     <button onclick="locateMe()" class="absolute right-4 bottom-40 z-[400] w-11 h-11 bg-white rounded-full shadow-lg grid place-items-center text-lg" aria-label="My location">📍</button>
   </section>
 
@@ -137,6 +140,7 @@ tailwind.config = { theme: { extend: {
         </div>
         <div class="mt-4 h-2 rounded-full bg-white/20 overflow-hidden"><div id="meBar" class="h-full bg-white rounded-full" style="width:0%"></div></div>
         <div id="meNext" class="text-xs text-forest-100/80 mt-1.5"></div>
+        <div id="meTrust" class="flex flex-wrap gap-1.5 mt-3 text-xs font-semibold"></div>
         <div class="grid grid-cols-3 gap-2 mt-5 text-center">
           <div class="bg-white/10 rounded-2xl py-2"><div id="meCleanups" class="text-xl font-extrabold">0</div><div class="text-[11px] text-forest-100/80">cleanups</div></div>
           <div class="bg-white/10 rounded-2xl py-2"><div id="meBags" class="text-xl font-extrabold">0</div><div class="text-[11px] text-forest-100/80">bags removed</div></div>
