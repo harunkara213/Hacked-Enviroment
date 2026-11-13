@@ -92,30 +92,98 @@ async function getLocationOrAsk(loadingImg) {
   }
 }
 
-function askForLocation(err) {
-  const ua = navigator.userAgent;
-  const steps = /iPhone|iPad|iPod/.test(ua)
-    ? ['Open the <b>Settings</b> app → <b>Privacy &amp; Security</b> → <b>Location Services</b> (turn it on)',
-       'Scroll to <b>Safari Websites</b> (or Chrome) → <b>While Using the App</b>, and turn on <b>Precise Location</b>',
-       'Come back here and tap <b>Try again</b>']
-    : /Android/.test(ua)
-      ? ['Tap the <b>🔒 lock / settings icon</b> left of the web address',
-         'Tap <b>Permissions</b> → <b>Location</b> → <b>Allow</b>',
-         'Make sure phone <b>Location</b> is on (swipe down from the top), then tap <b>Try again</b>']
-      : ['Click the <b>🔒 icon</b> left of the web address',
-         'Set <b>Location</b> to <b>Allow</b>',
-         'Tap <b>Try again</b>'];
-  const denied = err.kind === 'denied';
-  $('locTitle').textContent = denied ? 'Location access needed' : 'No GPS signal yet';
-  $('locMsg').innerHTML = denied
-    ? 'We use your location to prove the photo was taken at the spot. Your photo is saved: turn location on and try again.'
-    : "Your phone hasn't found you yet. Step outside or near a window, then try again. Your photo is saved.";
-  $('locSteps').innerHTML = denied ? steps.map((s, i) => `<li class="flex gap-2"><span class="font-extrabold text-forest-600">${i + 1}.</span><span>${s}</span></li>`).join('') : '';
-  $('locModal').classList.remove('hidden');
+// Apps like Instagram, WhatsApp and Discord open links in their own browser,
+// which often blocks location without ever asking.
+const IN_APP_BROWSER = /FBAN|FBAV|Instagram|WhatsApp|Discord|Snapchat|LinkedInApp|TikTok|musical_ly|Line\/|; wv\)/i.test(navigator.userAgent);
+
+async function locPermission() {
+  try { return (await navigator.permissions.query({ name: 'geolocation' })).state; }  // granted | prompt | denied
+  catch { return 'unknown'; }
+}
+
+// Browsers only show their "Allow location?" pop-up reliably when the request comes
+// straight from a tap, so this must be called first thing inside a click handler.
+function requestLocationFromTap() {
   return new Promise((resolve) => {
-    $('locRetry').onclick = () => { $('locModal').classList.add('hidden'); resolve(true); };
-    $('locCancel').onclick = () => { $('locModal').classList.add('hidden'); resolve(false); };
+    if (!navigator.geolocation) return resolve('unsupported');
+    navigator.geolocation.getCurrentPosition(
+      (p) => { setMyLocation({ lat: p.coords.latitude, lng: p.coords.longitude, acc: Math.round(p.coords.accuracy) }); resolve('granted'); },
+      (err) => resolve(err.code === 1 ? 'denied' : 'granted'),  // timeout = permission is fine, GPS just slow
+      { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 });
   });
+}
+
+function fixSteps() {
+  const ua = navigator.userAgent;
+  if (IN_APP_BROWSER) return [
+    "You opened this link inside another app (like Instagram, WhatsApp or Discord), and those block location",
+    'Tap <b>⋯</b> or the share icon → <b>Open in Safari</b> / <b>Open in Chrome</b>',
+    'Allow location when the browser asks'];
+  if (/iPhone|iPad|iPod/.test(ua)) return [
+    'Open the <b>Settings</b> app → <b>Privacy &amp; Security</b> → <b>Location Services</b>, and make sure it is <b>on</b>',
+    'In that list tap <b>Safari Websites</b> (using Chrome? tap <b>Chrome</b>) → <b>While Using the App</b>, and turn on <b>Precise Location</b>',
+    'Still blocked? In Safari tap <b>aA</b> in the address bar → <b>Website Settings</b> → <b>Location</b> → <b>Ask</b>',
+    'Come back here and tap the green button'];
+  if (/Android/.test(ua)) return [
+    'Swipe down from the top of the screen and make sure <b>Location</b> is on',
+    'Tap the <b>🔒 / settings icon</b> left of the web address → <b>Permissions</b> → <b>Location</b> → <b>Allow</b>',
+    'Come back here and tap the green button'];
+  return ['Click the <b>🔒 icon</b> left of the web address', 'Set <b>Location</b> to <b>Allow</b>', 'Tap the green button'];
+}
+
+function showLocModal({ title, msg, steps = [], primary, secondary = 'Cancel' }) {
+  $('locTitle').textContent = title;
+  $('locMsg').innerHTML = msg;
+  $('locSteps').innerHTML = steps.map((s, i) => `<li class="flex gap-2"><span class="font-extrabold text-forest-600">${i + 1}.</span><span>${s}</span></li>`).join('');
+  $('locRetry').textContent = primary;
+  $('locCancel').textContent = secondary;
+  $('locModal').classList.remove('hidden');
+}
+const hideLocModal = () => $('locModal').classList.add('hidden');
+
+function askForLocation(err) {
+  const denied = err.kind === 'denied' || err.kind === 'unsupported';
+  showLocModal(denied
+    ? { title: 'Location access needed', primary: 'Try again', steps: fixSteps(),
+        msg: 'We use your location to prove the photo was taken at the spot. Your photo is saved: turn location on, then try again.' }
+    : { title: 'No GPS signal yet', primary: 'Try again',
+        msg: "Your phone hasn't found you yet. Step outside or near a window, then try again. Your photo is saved." });
+  return new Promise((resolve) => {
+    $('locRetry').onclick = () => {
+      // Ask again from inside the tap so the browser can show its pop-up.
+      requestLocationFromTap();
+      hideLocModal(); resolve(true);
+    };
+    $('locCancel').onclick = () => { hideLocModal(); resolve(false); };
+  });
+}
+
+// First-run step (and the map banner): explain why, then ask from a tap.
+async function checkLocationAccess() {
+  const state = await locPermission();
+  $('locBanner').classList.toggle('hidden', state === 'granted');
+  if (state === 'granted') { ping(); return; }
+  if (storeGet('he_loc_later')) return;  // they said "Not now" before: just keep the banner
+  showLocationGate(state);
+}
+
+function showLocationGate(state) {
+  const blocked = state === 'denied' || IN_APP_BROWSER;
+  showLocModal(blocked
+    ? { title: 'Location is blocked', primary: "I've turned it on", secondary: 'Not now', steps: fixSteps(),
+        msg: 'Your browser is blocking location for this site, so it can\'t ask you. Turn it on like this:' }
+    : { title: 'Turn on location', primary: '📍 Allow location', secondary: 'Not now',
+        msg: 'Hacker Environment uses your location to show cleanups near you and to prove photos are taken at the spot. Tap below, then choose <b>Allow</b>.' });
+  $('locRetry').onclick = async () => {
+    const result = await requestLocationFromTap();  // first thing in the tap -> browser pop-up
+    if (result === 'granted') {
+      hideLocModal(); storeSet('he_loc_later', ''); $('locBanner').classList.add('hidden');
+      toast('📍 Location on. Thanks!'); ping();
+    } else {
+      showLocationGate('denied');
+    }
+  };
+  $('locCancel').onclick = () => { hideLocModal(); storeSet('he_loc_later', '1'); ping(); };
 }
 
 // Live position: keeps distances and the blue "you" dot up to date while the app is open.
@@ -340,7 +408,7 @@ function saveName() {
   storeSet('he_user', me);
   $('nameModal').classList.add('hidden');
   refreshPoints();
-  ping();
+  checkLocationAccess();
   loadSpots();
 }
 function changeName() { $('nameInput').value = me || ''; askName(); }
@@ -420,9 +488,13 @@ async function ping() {
   if (!me) return;
   const fd = new FormData();
   fd.append('user', me);
-  try { const p = await getLocation(); fd.append('lat', p.lat); fd.append('lng', p.lng); } catch {}
+  // Only read location in the background once it's allowed; asking is done from a tap.
+  if ((await locPermission()) !== 'denied') {
+    try { const p = await getLocation(); fd.append('lat', p.lat); fd.append('lng', p.lng); } catch {}
+  }
   try { await api('/api/ping', { method: 'POST', body: fd }); } catch {}
-  startTracking();
+  if ((await locPermission()) !== 'denied') startTracking();
+  $('locBanner').classList.toggle('hidden', !!myLocation);
 }
 
 async function locateMe() {
@@ -837,7 +909,7 @@ async function boot() {
   $('galleryInput').addEventListener('change', (e) => { addFiles([...e.target.files]); e.target.value = ''; });
   renderPending();
   go('map');
-  if (!me) askName(); else { refreshPoints(); ping(); }
+  if (!me) askName(); else { refreshPoints(); checkLocationAccess(); }
   $('nameInput').addEventListener('keydown', (e) => { if (e.key === 'Enter') saveName(); });
   api('/api/status').then((s) => {
     $('aiBadge').textContent = s.ai === 'gemini' ? 'AI online · Gemini' : 'Demo mode (no AI key)';
