@@ -503,8 +503,11 @@ function openSpot(id) {
           ${beforeAfter()}
         </div>`;
     }
-  } else if (s.reporter === me && !(s.status === 'claimed' && s.claimed_by === me)) {
-    action = `<div class="mt-5 rounded-2xl bg-slate-100 p-4 text-sm text-slate-600 font-medium">You reported this spot. ${s.status === 'claimed' ? esc(s.claimed_by) + ' is cleaning it now 🙌' : 'Waiting for a volunteer to pick it up.'}</div>`;
+  } else if (s.reporter === me && s.status !== 'open' && !(s.status === 'claimed' && s.claimed_by === me)) {
+    const message = s.status === 'pending' ? `Your cleanup is awaiting an independent check.`
+      : s.status === 'cleaned' ? `Your reported cleanup is complete.`
+        : `${esc(s.claimed_by)} is cleaning it now 🙌`;
+    action = `<div class="mt-5 rounded-2xl bg-slate-100 p-4 text-sm text-slate-600 font-medium">You reported this spot. ${message}</div>`;
   } else if (s.status === 'claimed' && s.claimed_by === me) {
     action = `
       <a href="https://www.google.com/maps/dir/?api=1&destination=${s.lat},${s.lng}" target="_blank" rel="noopener"

@@ -420,8 +420,6 @@ def claim_spot(spot_id: str, user: str = Form(...)):
         s = get_spot(c, spot_id)
         if s["status"] in ("pending", "cleaned"):
             raise HTTPException(409, "This spot has already been cleaned.")
-        if s["reporter"] == user:
-            raise HTTPException(403, "You can't clean a spot you reported. Let someone else take it!")
         if s["status"] == "claimed" and s["claimed_by"] != user:
             # claims expire after 24h so spots don't get stuck
             if time.time() - (s["claimed_at"] or 0) < 24 * 3600:
@@ -446,8 +444,6 @@ async def clean_spot(
         s = get_spot(c, spot_id)
     if s["status"] in ("pending", "cleaned"):
         raise HTTPException(409, "This spot has already been cleaned.")
-    if s["reporter"] == user and not s["self_clean"]:
-        raise HTTPException(403, "You can't clean a spot you reported.")
     if s["status"] != "claimed" or s["claimed_by"] != user:
         raise HTTPException(409, "Claim this spot first.")
     require_on_site(s, lat, lng, "after photo")
@@ -472,8 +468,8 @@ async def clean_spot(
         seen(c, user, lat, lng)
         name = save_photo(*after)
         t = trust_of(c, user)
-        # Solo cleanups are ALWAYS checked in person, even for trusted volunteers.
-        skip = not s["self_clean"] and t["trusted"] and random.random() < TRUSTED_SKIP_RATE
+        # Solo cleanups and reporter cleanups always receive an independent check.
+        skip = not s["self_clean"] and user != s["reporter"] and t["trusted"] and random.random() < TRUSTED_SKIP_RATE
         if skip:
             verifier, status_, awarded = None, "cleaned", None
         else:
@@ -504,8 +500,6 @@ async def start_spot(spot_id: str, user: str = Form(...), lat: float = Form(...)
         s = get_spot(c, spot_id)
         if s["status"] != "claimed" or s["claimed_by"] != user:
             raise HTTPException(409, "Claim this spot first.")
-        if s["reporter"] == user and not s["self_clean"]:
-            raise HTTPException(403, "You can't clean a spot you reported.")
         require_on_site(s, lat, lng, "before photo")
         name = save_photo(*before)
         c.execute("UPDATE spots SET task_before_photo=? WHERE id=? AND status='claimed' AND claimed_by=?",
