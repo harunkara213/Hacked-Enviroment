@@ -20,8 +20,13 @@ def _get_client():
         return None
     if _client is None:
         from google import genai
-        _client = genai.Client(api_key=key)
+        from google.genai import types
+        # JSON mode (response_schema) is only available on v1beta.
+        _client = genai.Client(api_key=key, http_options=types.HttpOptions(api_version="v1beta"))
     return _client
+
+
+LAST_ERROR = None  # shown on /api/status so silent fallbacks are visible
 
 
 # ---------- schemas ----------
@@ -99,6 +104,8 @@ def assess_spot(images: list[tuple[bytes, str]]) -> dict:
             a.estimated_bags = max(0, a.estimated_bags)
             return {**a.model_dump(), "points": points_for(a.difficulty, a.estimated_bags), "source": "gemini"}
         except Exception as e:  # network, quota, billing... keep the demo alive
+            global LAST_ERROR
+            LAST_ERROR = repr(e)[:300]
             print(f"[ai] assess failed, using demo mode: {e!r}")
     s = _seed(images)
     difficulty = 1 + s % 5
@@ -122,6 +129,8 @@ def verify_cleanup(before: list[tuple[bytes, str]], after: tuple[bytes, str]) ->
             v.percent_cleaned = max(0, min(100, v.percent_cleaned))
             return {**v.model_dump(), "source": "gemini"}
         except Exception as e:
+            global LAST_ERROR
+            LAST_ERROR = repr(e)[:300]
             print(f"[ai] verify failed, using demo mode: {e!r}")
     return {"same_place": True, "percent_cleaned": 100,
             "comment": "Nice work! (demo mode: AI offline)", "source": "demo"}

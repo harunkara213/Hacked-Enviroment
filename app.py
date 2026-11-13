@@ -161,7 +161,7 @@ def manifest():
 
 @app.get("/api/status")
 def status():
-    return {"ai": "gemini" if ai._get_client() else "demo", "model": ai.MODEL}
+    return {"ai": "gemini" if ai._get_client() else "demo", "model": ai.MODEL, "last_error": ai.LAST_ERROR}
 
 
 @app.get("/api/spots")
