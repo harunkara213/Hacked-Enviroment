@@ -225,7 +225,7 @@ async function loadTasks() {
   $('taskList').innerHTML = list.length ? list.map((s, i) => {
     const tag = canVerify(s) ? '<span class="text-indigo-600">🔍 Check · +10</span>'
       : s.claimed_by === me ? '<span class="text-amber-600">⏳ Yours: go clean</span>'
-      : s.reporter === me ? '<span class="text-slate-400">You reported</span>' : '';
+      : s.reporter === me ? '<span class="text-forest-700 font-semibold">Your report · tap to clean</span>' : '';
     const best = i === 0 ? (sortMode === 'near' ? 'Closest' : 'Top points') : '';
     return `<button onclick="go('map'); map.setView([${s.lat}, ${s.lng}], 17); openSpot('${s.id}')"
       class="w-full flex items-center gap-3 bg-white rounded-2xl p-2.5 shadow-sm text-left ${i === 0 ? 'ring-2 ring-forest-400' : ''}">
@@ -523,7 +523,8 @@ function openSpot(id) {
   } else if (s.status === 'claimed') {
     action = `<div class="mt-5 rounded-2xl bg-amber-50 p-4 text-sm text-amber-800 font-semibold">⏳ ${esc(s.claimed_by)} is cleaning this spot.</div>`;
   } else {
-    action = `<button onclick="claim('${s.id}')" class="mt-5 w-full rounded-2xl bg-forest-500 text-white font-extrabold py-4 text-lg shadow-lg active:scale-[.98] transition">Claim &amp; clean · +${s.points} pts</button>`;
+    const label = s.reporter === me ? 'Clean your report' : 'Claim &amp; clean';
+    action = `<button onclick="claim('${s.id}')" class="mt-5 w-full rounded-2xl bg-forest-500 text-white font-extrabold py-4 text-lg shadow-lg active:scale-[.98] transition">${label} · +${s.points} pts</button><p class="text-xs text-center text-slate-500 mt-2">Take a before photo to start, then upload an after photo when you finish. Another volunteer checks your cleanup.</p>`;
   }
 
   openSheet(`
@@ -609,7 +610,8 @@ async function claim(id) {
   fd.append('user', me);
   try {
     await api(`/api/spots/${id}/claim`, { method: 'POST', body: fd });
-    toast("It's yours! Head there and clean it up 💪");
+    const spot = spots.find((s) => s.id === id);
+    toast(spot?.reporter === me ? 'Your report is claimed. Take a before photo to start.' : "It's yours! Head there and clean it up 💪");
     await loadSpots();
     openSpot(id);
   } catch (e) { toast(e.message, 'err'); }
@@ -705,7 +707,7 @@ async function submitReport(selfClean = false) {
     openSpot(r.spot.id);
     toast(selfClean
       ? `Solo cleanup started · ${r.spot.points} pts. Clean it, then upload the after photo.`
-      : `Posted! Worth ${r.spot.points} pts to a volunteer (+${r.report_bonus} for you)`);
+      : `Posted! Open your report and choose “Clean your report” to upload a before/after pair, or leave it for another volunteer. (+${r.report_bonus} pts)`);
   } catch (e) { hideLoading(); toast(e.message, 'err'); }
 }
 
