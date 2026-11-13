@@ -12,14 +12,15 @@ Built at HackED Beta 2026.
 
 1. **Report**: take 1–4 photos of litter. The app grabs your GPS location and pins it on the map.
 2. **Score**: Gemini vision estimates difficulty (1–5), garbage bags needed, minutes and hazards. That becomes the spot's point value.
-3. **Claim and clean**: a volunteer claims the spot, cleans it, and takes an after photo on site.
-4. **AI pre-check**: AI compares before and after (same place? how much is gone?). If it passes, the points go **on hold**.
-5. **In-person check**: a random user near the spot (not the reporter or cleaner) is picked to go look. Their confirmation releases the points, and they earn +10 for checking.
+3. **Find and start**: after sharing location, volunteers can see the closest open cleanup. Claim it and take an on-site before photo to start.
+4. **Clean and AI pre-check**: take an after photo on site. AI compares it with the report and task-start photos. If it passes, points go **on hold**.
+5. **In-person check**: a different volunteer near the spot is picked to go look. Their confirmation releases the points, and they earn +10 for checking.
 6. **Compete**: leaderboard, levels (Seedling → Planet Hero) and a shareable score card.
 
 ### Anti-cheat
 - You can't clean or verify a spot you reported, and you can't verify your own cleanup.
 - Every after photo and check photo must be taken within 250 m of the spot.
+- A task before photo is required within 250 m before cleaning can start.
 - AI must confirm it's the same place and at least 60% cleaned before a human is even asked.
 - The verifier is picked at random, so you can't send a friend. If nobody checks within 6 h, any nearby user can.
 - If a verifier says "dirty" but the AI sees it clean, a second verifier is asked instead of punishing the cleaner.

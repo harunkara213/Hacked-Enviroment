@@ -67,6 +67,7 @@ tailwind.config = { theme: { extend: {
   <!-- MAP -->
   <section id="view-map" class="view active absolute inset-0">
     <div id="map"></div>
+    <button id="nearestTask" onclick="openNearestTask()" class="hidden absolute left-4 right-16 bottom-40 z-[400] bg-white/95 rounded-2xl px-4 py-3 text-left shadow-lg"></button>
     <div class="absolute left-4 right-4 bottom-28 z-[400] flex gap-2 overflow-x-auto no-scrollbar">
       <div class="shrink-0 bg-white/95 rounded-full px-3 py-1.5 text-xs font-semibold shadow flex items-center gap-1.5">
         <i class="w-2.5 h-2.5 rounded-full bg-rose-500"></i><span id="cntOpen">0</span> open</div>
@@ -85,7 +86,7 @@ tailwind.config = { theme: { extend: {
   <section id="view-report" class="view absolute inset-0 overflow-y-auto bg-gradient-to-b from-forest-900 to-forest-950">
     <div class="safe-top pt-20 px-5 pb-36 max-w-md mx-auto">
       <h1 class="text-white text-2xl font-extrabold">Report a dirty spot</h1>
-      <p class="text-forest-100/70 text-sm mt-1">Snap 1–4 photos from different angles. AI estimates how hard the cleanup is and how many points it's worth.</p>
+      <p class="text-forest-100/70 text-sm mt-1">Post a photo of the litter before it is cleaned. A volunteer can claim the spot, clean it, then upload an after photo to show the result.</p>
 
       <div id="photoGrid" class="grid grid-cols-2 gap-3 mt-5"></div>
 
