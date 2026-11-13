@@ -1,8 +1,7 @@
 .venv/
 .env
 data.db
-uploads/*
-!uploads/.gitkeep
+uploads/
 __pycache__/
 .DS_Store
 .claude/
