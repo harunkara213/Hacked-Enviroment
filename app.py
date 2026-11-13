@@ -353,7 +353,8 @@ def manifest():
 
 @app.get("/api/status")
 def status():
-    return {"ai": "gemini" if ai._get_client() else "demo", "model": ai.MODEL, "last_error": ai.LAST_ERROR}
+    return {"ai": "gemini" if ai._get_client() else "demo", "model": ai.MODEL, "last_error": ai.LAST_ERROR,
+            "storage": "postgres" if dbmod.IS_PG else "sqlite (data is lost on restart)"}
 
 
 @app.post("/api/ping")
