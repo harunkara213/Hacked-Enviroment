@@ -595,8 +595,12 @@ function openSpot(id) {
   } else if (s.status === 'claimed') {
     action = `<div class="mt-5 rounded-2xl bg-amber-50 p-4 text-sm text-amber-800 font-semibold">⏳ ${esc(s.claimed_by)} is cleaning this spot.</div>`;
   } else {
-    const label = s.reporter === me ? 'Clean your report' : 'Claim &amp; clean';
-    action = `<button onclick="claim('${s.id}')" class="mt-5 w-full rounded-2xl bg-forest-500 text-white font-extrabold py-4 text-lg shadow-lg active:scale-[.98] transition">${label} · +${s.points} pts</button><p class="text-xs text-center text-slate-500 mt-2">Take a before photo to start, then upload an after photo when you finish. Another volunteer checks your cleanup.</p>`;
+    const own = s.reporter === me;
+    const label = own ? 'Clean your report' : 'Claim &amp; clean';
+    const pts = own ? Math.round(s.points / 2) : s.points;  // cleaning your own report = solo cleanup, half points
+    action = `<button onclick="claim('${s.id}')" class="mt-5 w-full rounded-2xl bg-forest-500 text-white font-extrabold py-4 text-lg shadow-lg active:scale-[.98] transition">${label} · +${pts} pts</button><p class="text-xs text-center text-slate-500 mt-2">${own
+      ? 'Cleaning your own report counts as a solo cleanup: half points, the +5 report bonus goes back, max 3 a day, and another volunteer checks it.'
+      : 'Take a before photo to start, then upload an after photo when you finish. Another volunteer checks your cleanup.'}</p>`;
   }
 
   openSheet(`
@@ -779,7 +783,7 @@ async function submitReport(selfClean = false) {
     openSpot(r.spot.id);
     toast(selfClean
       ? `Solo cleanup started · ${r.spot.points} pts. Clean it, then upload the after photo.`
-      : `Posted! Open your report and choose “Clean your report” to upload a before/after pair, or leave it for another volunteer. (+${r.report_bonus} pts)`);
+      : `Posted! Worth ${r.spot.points} pts to a volunteer (+${r.report_bonus} for you). You can also clean it yourself for half points.`);
   } catch (e) { hideLoading(); toast(e.message, 'err'); }
 }
 

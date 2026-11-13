@@ -18,7 +18,7 @@ Built at HackED Beta 2026.
 6. **Compete**: leaderboard, levels (Seedling → Planet Hero) and a shareable score card.
 
 ### Anti-cheat
-- You can clean a spot you reported, but an independent volunteer must verify it; no one can verify their own cleanup.
+- You can clean a spot you reported, but it counts as a solo cleanup (half points, report bonus taken back, max 3 a day, 60 s minimum) and an independent volunteer must verify it; no one can verify their own cleanup.
 - Every after photo and check photo must be taken within 250 m of the spot.
 - A task before photo is required within 250 m before cleaning can start.
 - AI must confirm it's the same place and at least 60% cleaned before a human is even asked.

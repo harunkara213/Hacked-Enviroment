@@ -378,11 +378,7 @@ async def report_spot(
         raise HTTPException(400, f"Add 1 to {MAX_PHOTOS} photos.")
     if self_clean:
         with closing(db()) as c:
-            n = c.execute("SELECT COUNT(*) FROM spots WHERE reporter=? AND self_clean=1 AND created_at>?",
-                          (user, time.time() - 24 * 3600)).fetchone()[0]
-        if n >= SELF_CLEAN_DAILY_LIMIT:
-            raise HTTPException(429, f"You can do {SELF_CLEAN_DAILY_LIMIT} solo cleanups a day. "
-                                     "Report it instead and let someone else clean it.")
+            check_solo_limit(c, user)
     images = [await read_photo(p) for p in photos]
 
     result = ai.assess_spot(images)
@@ -413,6 +409,16 @@ async def report_spot(
     return {"spot": spot_out(row), "report_bonus": bonus}
 
 
+def check_solo_limit(c, user):
+    """Solo cleanups (reporting and cleaning your own spot) are capped per day, however they started."""
+    n = c.execute("""SELECT COUNT(*) FROM spots WHERE reporter=? AND self_clean=1
+                     AND COALESCE(claimed_at, created_at) > ?""",
+                  (user, time.time() - 24 * 3600)).fetchone()[0]
+    if n >= SELF_CLEAN_DAILY_LIMIT:
+        raise HTTPException(429, f"You can clean {SELF_CLEAN_DAILY_LIMIT} of your own spots a day. "
+                                 "Leave this one for another volunteer.")
+
+
 @app.post("/api/spots/{spot_id}/claim")
 def claim_spot(spot_id: str, user: str = Form(...)):
     user = clean_name(user)
@@ -424,9 +430,21 @@ def claim_spot(spot_id: str, user: str = Form(...)):
             # claims expire after 24h so spots don't get stuck
             if time.time() - (s["claimed_at"] or 0) < 24 * 3600:
                 raise HTTPException(409, f"{s['claimed_by']} is already on it.")
+        own = s["reporter"] == user
+        full = ai.points_for(s["difficulty"], s["bags"])
+        if own and not (s["status"] == "claimed" and s["claimed_by"] == user):
+            # Cleaning your own report = a solo cleanup: same limits as "I'll clean it myself"
+            # (half points, daily cap, 60 s minimum, always checked), and the +5 report bonus goes back.
+            check_solo_limit(c, user)
+            got = c.execute("""SELECT COALESCE(SUM(points),0) FROM events WHERE user=? AND spot_id=?
+                               AND kind IN ('report','bonus_back')""", (user, spot_id)).fetchone()[0]
+            if got > 0:
+                award(c, user, -got, "bonus_back", spot_id)
         seen(c, user)
-        c.execute("UPDATE spots SET status='claimed', claimed_by=?, claimed_at=?, task_before_photo=NULL WHERE id=?",
-                  (user, time.time(), spot_id))
+        c.execute("""UPDATE spots SET status='claimed', claimed_by=?, claimed_at=?, task_before_photo=NULL,
+                     self_clean=?, points=? WHERE id=?""",
+                  (user, time.time(), 1 if own else 0,
+                   round(full * SELF_CLEAN_FACTOR) if own else full, spot_id))
         row = get_spot(c, spot_id)
     return spot_out(row)
 
