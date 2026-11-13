@@ -67,6 +67,7 @@ SPOT_EXTRA_COLUMNS = {
     "pending_points": "INTEGER", "verifier": "TEXT", "verifier_assigned_at": "REAL",
     "excluded": "TEXT", "verified_by": "TEXT", "verified_at": "REAL",
     "verify_photo": "TEXT", "verify_note": "TEXT",
+    "task_before_photo": "TEXT",
 }
 
 
@@ -157,6 +158,8 @@ def spot_out(r: sqlite3.Row) -> dict:
     for k in ("after_photo", "verify_photo"):
         if d[k]:
             d[k] = "/uploads/" + d[k]
+    if d.get("task_before_photo"):
+        d["task_before_photo"] = "/uploads/" + d["task_before_photo"]
     d["open_to_anyone"] = d["status"] == "pending" and (
         d["verifier"] is None or time.time() - (d["verifier_assigned_at"] or 0) > VERIFIER_WINDOW_S)
     return d
@@ -265,11 +268,16 @@ def ping(user: str = Form(...), lat: float | None = Form(None), lng: float | Non
 
 
 @app.get("/api/spots")
-def list_spots():
+def list_spots(lat: float | None = None, lng: float | None = None):
     with closing(db()) as c, c:
         settle_expired(c)
         rows = c.execute("SELECT * FROM spots ORDER BY created_at DESC").fetchall()
-    return [spot_out(r) for r in rows]
+    result = [spot_out(r) for r in rows]
+    if lat is not None and lng is not None and -90 <= lat <= 90 and -180 <= lng <= 180:
+        for spot in result:
+            spot["distance_m"] = round(distance_m(lat, lng, spot["lat"], spot["lng"]))
+        result.sort(key=lambda spot: (spot["status"] != "open", spot["distance_m"]))
+    return result
 
 
 @app.post("/api/spots")
@@ -319,7 +327,7 @@ def claim_spot(spot_id: str, user: str = Form(...)):
             if time.time() - (s["claimed_at"] or 0) < 24 * 3600:
                 raise HTTPException(409, f"{s['claimed_by']} is already on it.")
         seen(c, user)
-        c.execute("UPDATE spots SET status='claimed', claimed_by=?, claimed_at=? WHERE id=?",
+        c.execute("UPDATE spots SET status='claimed', claimed_by=?, claimed_at=?, task_before_photo=NULL WHERE id=?",
                   (user, time.time(), spot_id))
         row = get_spot(c, spot_id)
     return spot_out(row)
@@ -344,8 +352,10 @@ async def clean_spot(
         raise HTTPException(409, "Claim this spot first.")
     require_on_site(s, lat, lng, "after photo")
 
+    if not s["task_before_photo"]:
+        raise HTTPException(409, "Take a before photo to start this cleanup first.")
     after = await read_photo(photo)
-    before = [load_photo(p) for p in json.loads(s["photos"])]
+    before = [load_photo(p) for p in json.loads(s["photos"])] + [load_photo(s["task_before_photo"])]
     v = ai.verify_cleanup(before, after)
 
     if not v["same_place"]:
@@ -379,6 +389,24 @@ async def clean_spot(
         row = get_spot(c, spot_id)
     return {"spot": spot_out(row), "earned": earned, "awarded": awarded,
             "pending": not skip, "verifier": verifier, "verification": v}
+
+
+@app.post("/api/spots/{spot_id}/start")
+async def start_spot(spot_id: str, user: str = Form(...), lat: float = Form(...), lng: float = Form(...), photo: UploadFile = File(...)):
+    user = clean_name(user)
+    before = await read_photo(photo)
+    with closing(db()) as c, c:
+        s = get_spot(c, spot_id)
+        if s["status"] != "claimed" or s["claimed_by"] != user:
+            raise HTTPException(409, "Claim this spot first.")
+        if s["reporter"] == user:
+            raise HTTPException(403, "You can't clean a spot you reported.")
+        require_on_site(s, lat, lng, "before photo")
+        name = save_photo(*before)
+        c.execute("UPDATE spots SET task_before_photo=? WHERE id=? AND status='claimed' AND claimed_by=?",
+                  (name, spot_id, user))
+        row = get_spot(c, spot_id)
+    return spot_out(row)
 
 
 @app.post("/api/spots/{spot_id}/verify")

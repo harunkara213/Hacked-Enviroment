@@ -6,6 +6,7 @@ const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '
 let me = storeGet('he_user');
 let spots = [];
 let map, markersLayer, meMarker;
+let myLocation = null;
 let pending = []; // compressed photo blobs for a new report
 
 // ---------- tiny utils ----------
@@ -131,7 +132,10 @@ function pinIcon(s) {
 }
 
 async function loadSpots() {
-  try { spots = await api('/api/spots'); } catch (e) { return toast(e.message, 'err'); }
+  try {
+    const q = myLocation ? `?lat=${myLocation.lat}&lng=${myLocation.lng}` : '';
+    spots = await api('/api/spots' + q);
+  } catch (e) { return toast(e.message, 'err'); }
   markersLayer.clearLayers();
   for (const s of spots) {
     L.marker([s.lat, s.lng], { icon: pinIcon(s) }).on('click', () => openSpot(s.id)).addTo(markersLayer);
@@ -147,6 +151,16 @@ async function loadSpots() {
     banner.textContent = `🔍 ${mine.length} cleanup${mine.length > 1 ? 's' : ''} need${mine.length > 1 ? '' : 's'} your check · +10 pts`;
     banner.onclick = () => { map.setView([mine[0].lat, mine[0].lng], 17); openSpot(mine[0].id); };
   }
+  const nearest = myLocation ? spots.filter((s) => s.status === 'open' && s.reporter !== me)
+    .sort((a, b) => a.distance_m - b.distance_m)[0] : null;
+  $('nearestTask').classList.toggle('hidden', !nearest);
+  if (nearest) $('nearestTask').innerHTML = `<div class="text-[10px] uppercase tracking-wide font-extrabold text-forest-700">Closest open cleanup</div><div class="font-bold text-sm truncate mt-0.5">${esc(nearest.summary)}</div><div class="text-xs text-slate-500">${nearest.distance_m < 1000 ? `${nearest.distance_m} m` : `${(nearest.distance_m / 1000).toFixed(1)} km`} away · ${nearest.points} pts</div>`;
+}
+
+function openNearestTask() {
+  const nearest = spots.filter((s) => s.status === 'open' && s.reporter !== me)
+    .sort((a, b) => a.distance_m - b.distance_m)[0];
+  if (nearest) openSpot(nearest.id);
 }
 
 // Can I be the third person who checks this cleanup?
@@ -161,16 +175,19 @@ async function ping() {
   if (!me) return;
   const fd = new FormData();
   fd.append('user', me);
-  try { const p = await getLocation(); fd.append('lat', p.lat); fd.append('lng', p.lng); } catch {}
+  try { const p = await getLocation(); myLocation = p; fd.append('lat', p.lat); fd.append('lng', p.lng); } catch {}
   try { await api('/api/ping', { method: 'POST', body: fd }); } catch {}
+  await loadSpots();
 }
 
 async function locateMe() {
   try {
     const p = await getLocation();
+    myLocation = p;
     map.setView([p.lat, p.lng], 17);
     if (meMarker) meMarker.remove();
     meMarker = L.circleMarker([p.lat, p.lng], { radius: 8, color: '#fff', weight: 3, fillColor: '#2563eb', fillOpacity: 1 }).addTo(map);
+    await loadSpots();
   } catch (e) { toast(e.message, 'err'); }
 }
 
@@ -197,7 +214,7 @@ function openSpot(id) {
 
   const beforeAfter = (extra = '') => `
         <div class="grid grid-cols-${extra ? 3 : 2} gap-2 mt-3">
-          <div><div class="text-[11px] font-bold text-slate-500 mb-1">BEFORE</div><img src="${esc(s.photos[0])}" class="rounded-xl aspect-square object-cover w-full" alt=""></div>
+          <div><div class="text-[11px] font-bold text-slate-500 mb-1">BEFORE</div><img src="${esc(s.task_before_photo || s.photos[0])}" class="rounded-xl aspect-square object-cover w-full" alt=""></div>
           <div><div class="text-[11px] font-bold text-slate-500 mb-1">AFTER</div><img src="${esc(s.after_photo)}" class="rounded-xl aspect-square object-cover w-full" alt=""></div>
           ${extra ? `<div><div class="text-[11px] font-bold text-slate-500 mb-1">CHECK</div><img src="${esc(extra)}" class="rounded-xl aspect-square object-cover w-full" alt=""></div>` : ''}
         </div>`;
@@ -251,11 +268,12 @@ function openSpot(id) {
     action = `
       <a href="https://www.google.com/maps/dir/?api=1&destination=${s.lat},${s.lng}" target="_blank" rel="noopener"
          class="mt-5 block text-center w-full rounded-2xl bg-slate-100 font-bold py-3.5">🧭 Directions</a>
-      <label class="mt-2 block text-center w-full rounded-2xl bg-forest-500 text-white font-extrabold py-4 text-lg shadow-lg cursor-pointer active:scale-[.98] transition">
+      ${s.task_before_photo ? `<div class="mt-3"><div class="text-xs font-bold text-slate-500 mb-1">TASK BEFORE PHOTO ✓</div><img src="${esc(s.task_before_photo)}" class="rounded-xl aspect-video object-cover w-full" alt="Before cleanup"></div>` : camBtn('📷 Take task BEFORE photo to start', 'bg-amber-400 text-amber-950', `startTask('${s.id}', this)`)}
+      ${s.task_before_photo ? `<label class="mt-2 block text-center w-full rounded-2xl bg-forest-500 text-white font-extrabold py-4 text-lg shadow-lg cursor-pointer active:scale-[.98] transition">
         📸 Upload after photo
         <input type="file" accept="image/*" capture="environment" class="hidden" onchange="submitClean('${s.id}', this)">
-      </label>
-      <p class="text-xs text-center text-slate-500 mt-2">Clean the spot, then take the photo from the same place. AI compares it with the original report.</p>`;
+      </label>` : ''}
+      <p class="text-xs text-center text-slate-500 mt-2">Capture the on-site before photo before cleaning. Another volunteer checks the after photo.</p>`;
   } else if (s.status === 'claimed') {
     action = `<div class="mt-5 rounded-2xl bg-amber-50 p-4 text-sm text-amber-800 font-semibold">⏳ ${esc(s.claimed_by)} is cleaning this spot.</div>`;
   } else {
@@ -282,7 +300,7 @@ function openSpot(id) {
       <div class="rounded-xl bg-slate-50 px-3 py-2">⏱️ ~<b>${s.minutes}</b> min</div>
     </div>
     ${hazards}
-    <div class="text-xs text-slate-400 mt-3">Reported by ${esc(s.reporter)} · ${timeAgo(s.created_at)}${s.ai_source === 'demo' ? ' · demo score' : ''}</div>
+    <div class="text-xs text-slate-400 mt-3">Reported by ${esc(s.reporter)} · ${timeAgo(s.created_at)}${s.distance_m != null ? ` · ${s.distance_m < 1000 ? `${s.distance_m} m` : `${(s.distance_m / 1000).toFixed(1)} km`} away` : ''}${s.ai_source === 'demo' ? ' · demo score' : ''}</div>
     ${s.status === 'open' ? note : ''}
     ${action}`);
 }
@@ -351,6 +369,18 @@ async function claim(id) {
   } catch (e) { toast(e.message, 'err'); }
 }
 
+async function startTask(id, input) {
+  const file = input.files[0]; input.value = '';
+  if (!file) return;
+  let blob, pos;
+  try { blob = await compress(file); pos = await getLocation(); } catch (e) { return toast(e.message, 'err'); }
+  const fd = new FormData(); fd.append('user', me); fd.append('lat', pos.lat); fd.append('lng', pos.lng); fd.append('photo', blob, 'before.jpg');
+  try {
+    await api(`/api/spots/${id}/start`, { method: 'POST', body: fd });
+    myLocation = pos; toast('Before photo saved. Cleanup started!'); await loadSpots(); openSpot(id);
+  } catch (e) { toast(e.message, 'err'); }
+}
+
 async function submitClean(id, input) {
   const r = await sendPhoto(`/api/spots/${id}/clean`, input, {}, 'AI is checking your cleanup…');
   if (r) celebrate(r);
@@ -369,7 +399,7 @@ function celebrate(r) {
       ${head}
       <div class="text-sm text-slate-500 mt-1">AI: ${r.verification.percent_cleaned}% cleaned · ${esc(r.verification.comment)}</div>
       <div class="grid grid-cols-2 gap-2 mt-5">
-        <img src="${esc(r.spot.photos[0])}" class="rounded-2xl aspect-square object-cover w-full" alt="">
+        <img src="${esc(r.spot.task_before_photo || r.spot.photos[0])}" class="rounded-2xl aspect-square object-cover w-full" alt="">
         <img src="${esc(r.spot.after_photo)}" class="rounded-2xl aspect-square object-cover w-full" alt="">
       </div>
       <button onclick="go('me')" class="mt-5 w-full rounded-2xl bg-forest-900 text-white font-bold py-4">See my Generation Score</button>
