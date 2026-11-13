@@ -38,14 +38,66 @@ function showLoading(text, imgUrl) {
 }
 const hideLoading = () => $('loading').classList.add('hidden');
 
-function getLocation() {
+// Phones first return a rough Wi-Fi/cell fix (often 200-500 m off), then real GPS.
+// So collect fixes for a few seconds and keep the most accurate one.
+const GOOD_ACCURACY_M = 20;
+function getLocation(maxWaitMs = 8000) {
   return new Promise((resolve, reject) => {
     if (!navigator.geolocation) return reject(new Error('Location is not available on this device.'));
-    navigator.geolocation.getCurrentPosition(
-      (p) => resolve({ lat: p.coords.latitude, lng: p.coords.longitude, acc: p.coords.accuracy }),
-      () => reject(new Error('Allow location access so we can pin the spot.')),
-      { enableHighAccuracy: true, timeout: 12000, maximumAge: 30000 });
+    let best = null, id = null, done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      navigator.geolocation.clearWatch(id);
+      if (best) { setMyLocation(best); resolve(best); }
+      else reject(new Error('Allow location access so we can pin the spot.'));
+    };
+    id = navigator.geolocation.watchPosition(
+      (p) => {
+        const fix = { lat: p.coords.latitude, lng: p.coords.longitude, acc: Math.round(p.coords.accuracy) };
+        if (!best || fix.acc <= best.acc) best = fix;
+        if (best.acc <= GOOD_ACCURACY_M) finish();
+      },
+      () => finish(),
+      { enableHighAccuracy: true, timeout: maxWaitMs, maximumAge: 0 });
+    setTimeout(finish, maxWaitMs);
   });
+}
+
+// Live position: keeps distances and the blue "you" dot up to date while the app is open.
+let watchId = null;
+function startTracking() {
+  if (watchId !== null || !navigator.geolocation) return;
+  watchId = navigator.geolocation.watchPosition(
+    (p) => setMyLocation({ lat: p.coords.latitude, lng: p.coords.longitude, acc: Math.round(p.coords.accuracy) }),
+    () => {},
+    { enableHighAccuracy: true, maximumAge: 5000 });
+}
+
+let accCircle = null;
+function setMyLocation(fix) {
+  // Ignore a rougher fix if we got a precise one in the last minute.
+  if (myLocation && fix.acc > myLocation.acc * 2 && Date.now() - myLocation.t < 60000) return;
+  myLocation = { ...fix, t: Date.now() };
+  if (!map) return;
+  if (meMarker) meMarker.setLatLng([fix.lat, fix.lng]);
+  else meMarker = L.circleMarker([fix.lat, fix.lng], { radius: 8, color: '#fff', weight: 3, fillColor: '#2563eb', fillOpacity: 1 }).addTo(map);
+  if (accCircle) accCircle.setLatLng([fix.lat, fix.lng]).setRadius(fix.acc);
+  else accCircle = L.circle([fix.lat, fix.lng], { radius: fix.acc, color: '#2563eb', weight: 1, fillOpacity: 0.08, interactive: false }).addTo(map);
+  renderNearest();
+  if ($('view-tasks').classList.contains('active')) loadTasks();
+}
+
+// Distance from me to a spot, live (null if we don't know where I am).
+function distTo(s) {
+  return myLocation ? Math.round(map.distance([myLocation.lat, myLocation.lng], [s.lat, s.lng])) : null;
+}
+function fmtDist(d) {
+  if (d == null) return '';
+  // Within GPS error of the spot: you're there.
+  if (d <= Math.max(30, myLocation.acc)) return "📍 You're here";
+  const txt = d < 1000 ? `${Math.round(d / 10) * 10} m away` : `${(d / 1000).toFixed(1)} km away`;
+  return myLocation.acc > 100 ? `${txt} (weak GPS ±${myLocation.acc} m)` : txt;
 }
 
 // Shrink photos before upload: faster on venue Wi-Fi and cheaper for the AI.
@@ -100,23 +152,22 @@ const money = (cents) => '$' + (cents / 100).toFixed(cents % 100 ? 2 : 0);
 
 // ---------- tasks: nearest / most points ----------
 let sortMode = storeGet('he_sort') || 'near';
-let myPos = null;
-
 function setSort(m) { sortMode = m; storeSet('he_sort', m); loadTasks(); }
 
 async function loadTasks() {
   $('sortNear').className = 'rounded-xl py-2 ' + (sortMode === 'near' ? 'bg-white text-forest-900' : 'text-white/80');
   $('sortPoints').className = 'rounded-xl py-2 ' + (sortMode === 'points' ? 'bg-white text-forest-900' : 'text-white/80');
-  if (!myPos) {
-    try { myPos = await getLocation(); } catch { const c = map.getCenter(); myPos = { lat: c.lat, lng: c.lng, guess: true }; }
-  }
-  const dist = (s) => map.distance([myPos.lat, myPos.lng], [s.lat, s.lng]);
-  const fmt = (m) => (m < 1000 ? `${Math.round(m / 10) * 10} m` : `${(m / 1000).toFixed(1)} km`);
+  if (!myLocation) { try { await getLocation(); } catch {} }
+  const c = map.getCenter();
+  const from = myLocation || { lat: c.lat, lng: c.lng };
+  const dist = (s) => map.distance([from.lat, from.lng], [s.lat, s.lng]);
+  const fmt = (m) => (myLocation ? fmtDist(Math.round(m)) : `${(m / 1000).toFixed(1)} km`).replace(' away', '');
   const list = spots
     .filter((s) => s.status === 'open' || (s.status === 'claimed' && s.claimed_by === me) || canVerify(s))
     .map((s) => ({ ...s, d: dist(s) }))
     .sort((a, b) => (sortMode === 'near' ? a.d - b.d : b.points - a.points || a.d - b.d));
-  $('tasksSub').textContent = myPos.guess ? 'Location off: distances are from the map center.' : `${list.length} spot${list.length === 1 ? '' : 's'} waiting for you.`;
+  $('tasksSub').textContent = !myLocation ? 'Location off: distances are from the map center.'
+    : `${list.length} spot${list.length === 1 ? '' : 's'} waiting for you${myLocation.acc > 100 ? ` · weak GPS (±${myLocation.acc} m)` : ''}.`;
   $('taskList').innerHTML = list.length ? list.map((s, i) => {
     const tag = canVerify(s) ? '<span class="text-indigo-600">🔍 Check · +10</span>'
       : s.claimed_by === me ? '<span class="text-amber-600">⏳ Yours: go clean</span>'
@@ -128,7 +179,7 @@ async function loadTasks() {
       <div class="flex-1 min-w-0">
         ${best ? `<div class="text-[10px] font-extrabold uppercase tracking-wide text-forest-600">${best}</div>` : ''}
         <div class="font-bold text-sm truncate">${esc(s.summary)}</div>
-        <div class="text-xs text-slate-500 mt-0.5">📍 ${fmt(s.d)} · <span style="color:${DIFF_COLOR[s.difficulty]}">${DIFF[s.difficulty]}</span> · ~${s.minutes} min ${tag ? '· ' + tag : ''}</div>
+        <div class="text-xs text-slate-500 mt-0.5">${fmt(s.d).startsWith('📍') ? '' : '📍 '}${fmt(s.d)} · <span style="color:${DIFF_COLOR[s.difficulty]}">${DIFF[s.difficulty]}</span> · ~${s.minutes} min ${tag ? '· ' + tag : ''}</div>
       </div>
       <div class="text-right shrink-0"><div class="text-xl font-extrabold text-forest-700 leading-none">${s.points}</div><div class="text-[10px] text-slate-500 font-semibold">pts</div></div>
     </button>`;
@@ -265,10 +316,7 @@ function pinIcon(s) {
 }
 
 async function loadSpots() {
-  try {
-    const q = myLocation ? `?lat=${myLocation.lat}&lng=${myLocation.lng}` : '';
-    spots = await api('/api/spots' + q);
-  } catch (e) { return toast(e.message, 'err'); }
+  try { spots = await api('/api/spots'); } catch (e) { return toast(e.message, 'err'); }
   markersLayer.clearLayers();
   for (const s of spots) {
     L.marker([s.lat, s.lng], { icon: pinIcon(s) }).on('click', () => openSpot(s.id)).addTo(markersLayer);
@@ -284,15 +332,25 @@ async function loadSpots() {
     banner.textContent = `🔍 ${mine.length} cleanup${mine.length > 1 ? 's' : ''} need${mine.length > 1 ? '' : 's'} your check · +10 pts`;
     banner.onclick = () => { map.setView([mine[0].lat, mine[0].lng], 17); openSpot(mine[0].id); };
   }
-  const nearest = myLocation ? spots.filter((s) => s.status === 'open' && s.reporter !== me)
-    .sort((a, b) => a.distance_m - b.distance_m)[0] : null;
-  $('nearestTask').classList.toggle('hidden', !nearest);
-  if (nearest) $('nearestTask').innerHTML = `<div class="text-[10px] uppercase tracking-wide font-extrabold text-forest-700">Closest open cleanup</div><div class="font-bold text-sm truncate mt-0.5">${esc(nearest.summary)}</div><div class="text-xs text-slate-500">${nearest.distance_m < 1000 ? `${nearest.distance_m} m` : `${(nearest.distance_m / 1000).toFixed(1)} km`} away · ${nearest.points} pts</div>`;
+  renderNearest();
+}
+
+function nearestOpen() {
+  if (!myLocation) return null;
+  return spots.filter((s) => s.status === 'open' && s.reporter !== me)
+    .sort((a, b) => distTo(a) - distTo(b))[0] || null;
+}
+
+function renderNearest() {
+  const el = $('nearestTask');
+  if (!el) return;
+  const nearest = nearestOpen();
+  el.classList.toggle('hidden', !nearest);
+  if (nearest) el.innerHTML = `<div class="text-[10px] uppercase tracking-wide font-extrabold text-forest-700">Closest open cleanup</div><div class="font-bold text-sm truncate mt-0.5">${esc(nearest.summary)}</div><div class="text-xs text-slate-500">${fmtDist(distTo(nearest))} · ${nearest.points} pts</div>`;
 }
 
 function openNearestTask() {
-  const nearest = spots.filter((s) => s.status === 'open' && s.reporter !== me)
-    .sort((a, b) => a.distance_m - b.distance_m)[0];
+  const nearest = nearestOpen();
   if (nearest) openSpot(nearest.id);
 }
 
@@ -308,19 +366,16 @@ async function ping() {
   if (!me) return;
   const fd = new FormData();
   fd.append('user', me);
-  try { const p = await getLocation(); myLocation = p; fd.append('lat', p.lat); fd.append('lng', p.lng); } catch {}
+  try { const p = await getLocation(); fd.append('lat', p.lat); fd.append('lng', p.lng); } catch {}
   try { await api('/api/ping', { method: 'POST', body: fd }); } catch {}
-  await loadSpots();
+  startTracking();
 }
 
 async function locateMe() {
   try {
     const p = await getLocation();
-    myLocation = p;
     map.setView([p.lat, p.lng], 17);
-    if (meMarker) meMarker.remove();
-    meMarker = L.circleMarker([p.lat, p.lng], { radius: 8, color: '#fff', weight: 3, fillColor: '#2563eb', fillOpacity: 1 }).addTo(map);
-    await loadSpots();
+    if (p.acc > 100) toast(`GPS is weak (±${p.acc} m). Step outside or turn on precise location.`, 'err');
   } catch (e) { toast(e.message, 'err'); }
 }
 
@@ -433,7 +488,7 @@ function openSpot(id) {
       <div class="rounded-xl bg-slate-50 px-3 py-2">⏱️ ~<b>${s.minutes}</b> min</div>
     </div>
     ${hazards}
-    <div class="text-xs text-slate-400 mt-3">Reported by ${userLink(s.reporter)} · ${timeAgo(s.created_at)}${s.distance_m != null ? ` · ${s.distance_m < 1000 ? `${s.distance_m} m` : `${(s.distance_m / 1000).toFixed(1)} km`} away` : ''}${s.ai_source === 'demo' ? ' · demo score' : ''}</div>
+    <div class="text-xs text-slate-400 mt-3">Reported by ${userLink(s.reporter)} · ${timeAgo(s.created_at)}${myLocation ? ` · ${fmtDist(distTo(s))}` : ''}${s.ai_source === 'demo' ? ' · demo score' : ''}</div>
     ${s.status === 'open' ? note : ''}
     ${action}`);
 }
@@ -446,7 +501,7 @@ async function sendPhoto(url, input, fields, loadingText) {
   let blob, pos;
   try {
     blob = await compress(file);
-    showLoading('Checking your location…', URL.createObjectURL(blob));
+    showLoading('Getting a precise GPS fix…', URL.createObjectURL(blob));
     pos = await getLocation();
   } catch (e) { hideLoading(); toast(e.message, 'err'); return null; }
   showLoading(loadingText, URL.createObjectURL(blob));
@@ -510,7 +565,7 @@ async function startTask(id, input) {
   const fd = new FormData(); fd.append('user', me); fd.append('lat', pos.lat); fd.append('lng', pos.lng); fd.append('photo', blob, 'before.jpg');
   try {
     await api(`/api/spots/${id}/start`, { method: 'POST', body: fd });
-    myLocation = pos; toast('Before photo saved. Cleanup started!'); await loadSpots(); openSpot(id);
+    toast('Before photo saved. Cleanup started!'); await loadSpots(); openSpot(id);
   } catch (e) { toast(e.message, 'err'); }
 }
 
@@ -564,7 +619,7 @@ async function addFiles(files) {
 async function submitReport() {
   if (!pending.length) return;
   let pos;
-  showLoading('Getting your location…', pending[0].url);
+  showLoading('Getting a precise GPS fix…', pending[0].url);
   try {
     pos = await getLocation();
   } catch (e) {
