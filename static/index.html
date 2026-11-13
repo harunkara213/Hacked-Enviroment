@@ -210,6 +210,20 @@ tailwind.config = { theme: { extend: {
   </div>
 </div>
 
+<!-- Location help: shown instead of an error when location is off or GPS has no signal -->
+<div id="locModal" class="fixed inset-0 z-[950] bg-black/50 hidden">
+  <div class="h-full flex items-end sm:items-center justify-center p-4">
+    <div class="w-full max-w-sm bg-white rounded-[28px] p-6 shadow-2xl safe-bottom">
+      <div class="text-4xl text-center">📍</div>
+      <h2 id="locTitle" class="text-xl font-extrabold text-center mt-2">Location access needed</h2>
+      <p id="locMsg" class="text-sm text-slate-600 text-center mt-2"></p>
+      <ol id="locSteps" class="mt-4 space-y-2 text-sm text-slate-700"></ol>
+      <button id="locRetry" class="mt-5 w-full rounded-2xl bg-forest-500 text-white font-extrabold py-4 active:scale-[.98] transition">Try again</button>
+      <button id="locCancel" class="mt-2 w-full rounded-2xl text-slate-500 font-semibold py-3">Cancel</button>
+    </div>
+  </div>
+</div>
+
 <!-- Name modal -->
 <div id="nameModal" class="fixed inset-0 z-[1000] bg-forest-950/95 hidden">
   <div class="h-full grid place-items-center px-6">

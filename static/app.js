@@ -41,16 +41,32 @@ const hideLoading = () => $('loading').classList.add('hidden');
 // Phones first return a rough Wi-Fi/cell fix (often 200-500 m off), then real GPS.
 // So collect fixes for a few seconds and keep the most accurate one.
 const GOOD_ACCURACY_M = 20;
+function locError(kind) {
+  const e = new Error(kind === 'denied' ? 'Location access is turned off for this site.'
+    : kind === 'unsupported' ? 'This browser has no location support.'
+    : "Couldn't get a GPS signal.");
+  e.kind = kind;  // 'denied' | 'unavailable' | 'unsupported'
+  return e;
+}
+
 function getLocation(maxWaitMs = 8000) {
   return new Promise((resolve, reject) => {
-    if (!navigator.geolocation) return reject(new Error('Location is not available on this device.'));
-    let best = null, id = null, done = false;
+    if (!navigator.geolocation) return reject(locError('unsupported'));
+    let best = null, id = null, done = false, denied = false;
     const finish = () => {
       if (done) return;
       done = true;
       navigator.geolocation.clearWatch(id);
-      if (best) { setMyLocation(best); resolve(best); }
-      else reject(new Error('Allow location access so we can pin the spot.'));
+      if (best) { setMyLocation(best); return resolve(best); }
+      if (denied) return reject(locError('denied'));
+      // No precise fix in time (indoors, slow GPS): accept any recent rough fix rather than failing.
+      navigator.geolocation.getCurrentPosition(
+        (p) => {
+          const fix = { lat: p.coords.latitude, lng: p.coords.longitude, acc: Math.round(p.coords.accuracy) };
+          setMyLocation(fix); resolve(fix);
+        },
+        (err) => reject(locError(err.code === 1 ? 'denied' : 'unavailable')),
+        { enableHighAccuracy: false, timeout: 10000, maximumAge: 120000 });
     };
     id = navigator.geolocation.watchPosition(
       (p) => {
@@ -58,9 +74,47 @@ function getLocation(maxWaitMs = 8000) {
         if (!best || fix.acc <= best.acc) best = fix;
         if (best.acc <= GOOD_ACCURACY_M) finish();
       },
-      () => finish(),
+      (err) => { if (err.code === 1) { denied = true; finish(); } },  // keep waiting on timeouts
       { enableHighAccuracy: true, timeout: maxWaitMs, maximumAge: 0 });
     setTimeout(finish, maxWaitMs);
+  });
+}
+
+// Like getLocation, but if it fails we explain how to turn location on and let the
+// user retry, so a photo they just took isn't thrown away. Resolves null on Cancel.
+async function getLocationOrAsk(loadingImg) {
+  for (;;) {
+    try { return await getLocation(); } catch (e) {
+      hideLoading();
+      if (!(await askForLocation(e))) return null;
+      showLoading('Getting a precise GPS fix…', loadingImg);
+    }
+  }
+}
+
+function askForLocation(err) {
+  const ua = navigator.userAgent;
+  const steps = /iPhone|iPad|iPod/.test(ua)
+    ? ['Open the <b>Settings</b> app → <b>Privacy &amp; Security</b> → <b>Location Services</b> (turn it on)',
+       'Scroll to <b>Safari Websites</b> (or Chrome) → <b>While Using the App</b>, and turn on <b>Precise Location</b>',
+       'Come back here and tap <b>Try again</b>']
+    : /Android/.test(ua)
+      ? ['Tap the <b>🔒 lock / settings icon</b> left of the web address',
+         'Tap <b>Permissions</b> → <b>Location</b> → <b>Allow</b>',
+         'Make sure phone <b>Location</b> is on (swipe down from the top), then tap <b>Try again</b>']
+      : ['Click the <b>🔒 icon</b> left of the web address',
+         'Set <b>Location</b> to <b>Allow</b>',
+         'Tap <b>Try again</b>'];
+  const denied = err.kind === 'denied';
+  $('locTitle').textContent = denied ? 'Location access needed' : 'No GPS signal yet';
+  $('locMsg').innerHTML = denied
+    ? 'We use your location to prove the photo was taken at the spot. Your photo is saved: turn location on and try again.'
+    : "Your phone hasn't found you yet. Step outside or near a window, then try again. Your photo is saved.";
+  $('locSteps').innerHTML = denied ? steps.map((s, i) => `<li class="flex gap-2"><span class="font-extrabold text-forest-600">${i + 1}.</span><span>${s}</span></li>`).join('') : '';
+  $('locModal').classList.remove('hidden');
+  return new Promise((resolve) => {
+    $('locRetry').onclick = () => { $('locModal').classList.add('hidden'); resolve(true); };
+    $('locCancel').onclick = () => { $('locModal').classList.add('hidden'); resolve(false); };
   });
 }
 
@@ -372,11 +426,10 @@ async function ping() {
 }
 
 async function locateMe() {
-  try {
-    const p = await getLocation();
-    map.setView([p.lat, p.lng], 17);
-    if (p.acc > 100) toast(`GPS is weak (±${p.acc} m). Step outside or turn on precise location.`, 'err');
-  } catch (e) { toast(e.message, 'err'); }
+  const p = await getLocationOrAsk();
+  if (!p) return;
+  map.setView([p.lat, p.lng], 17);
+  if (p.acc > 100) toast(`GPS is weak (±${p.acc} m). Step outside or turn on precise location.`, 'err');
 }
 
 // ---------- spot sheet ----------
@@ -500,13 +553,13 @@ async function sendPhoto(url, input, fields, loadingText) {
   const file = input.files[0];
   input.value = '';
   if (!file) return null;
-  let blob, pos;
-  try {
-    blob = await compress(file);
-    showLoading('Getting a precise GPS fix…', URL.createObjectURL(blob));
-    pos = await getLocation();
-  } catch (e) { hideLoading(); toast(e.message, 'err'); return null; }
-  showLoading(loadingText, URL.createObjectURL(blob));
+  let blob;
+  try { blob = await compress(file); } catch (e) { toast(e.message, 'err'); return null; }
+  const img = URL.createObjectURL(blob);
+  showLoading('Getting a precise GPS fix…', img);
+  const pos = await getLocationOrAsk(img);
+  if (!pos) { hideLoading(); return null; }
+  showLoading(loadingText, img);
   const fd = new FormData();
   fd.append('user', me);
   fd.append('lat', pos.lat);
@@ -562,8 +615,13 @@ async function claim(id) {
 async function startTask(id, input) {
   const file = input.files[0]; input.value = '';
   if (!file) return;
-  let blob, pos;
-  try { blob = await compress(file); pos = await getLocation(); } catch (e) { return toast(e.message, 'err'); }
+  let blob;
+  try { blob = await compress(file); } catch (e) { return toast(e.message, 'err'); }
+  const img = URL.createObjectURL(blob);
+  showLoading('Getting a precise GPS fix…', img);
+  const pos = await getLocationOrAsk(img);
+  hideLoading();
+  if (!pos) return;
   const fd = new FormData(); fd.append('user', me); fd.append('lat', pos.lat); fd.append('lng', pos.lng); fd.append('photo', blob, 'before.jpg');
   try {
     await api(`/api/spots/${id}/start`, { method: 'POST', body: fd });
@@ -621,17 +679,9 @@ async function addFiles(files) {
 
 async function submitReport(selfClean = false) {
   if (!pending.length) return;
-  let pos;
   showLoading('Getting a precise GPS fix…', pending[0].url);
-  try {
-    pos = await getLocation();
-  } catch (e) {
-    hideLoading();
-    if (selfClean) return toast('Solo cleanups need your GPS location. ' + e.message, 'err');
-    if (!confirm(e.message + '\n\nUse the map center instead?')) return;
-    const c = map.getCenter();
-    pos = { lat: c.lat, lng: c.lng };
-  }
+  const pos = await getLocationOrAsk(pending[0].url);
+  if (!pos) { hideLoading(); return; }
   showLoading('AI is analyzing the mess…', pending[0].url);
   const fd = new FormData();
   fd.append('user', me);
