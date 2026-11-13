@@ -26,7 +26,21 @@ Built at HackED Beta 2026.
 - Anyone passing by can flag a cleaned spot as still dirty: the cleaner loses the points and gets a strike.
 - **Trust score:** after 3 confirmed cleanups with no strikes, only 1 in 5 cleanups gets an in-person check.
 - Nobody verifies within 48 h: the cleaner gets half the points from the AI check alone.
-- Points are capped per user per day, and there are no cash rewards, so there's no incentive to litter on purpose.
+- Points are capped per user per day.
+- AI checks every photo for fakes (photo of a screen, screenshot, stock or AI image). A fake photo is a strike.
+
+### Tasks
+The Tasks tab lists open spots sorted by **nearest** or **most points**, plus any cleanup you were picked to check.
+
+### Donations (only for proven, trusted volunteers)
+People can tip a volunteer, but the rules are built so littering for money never pays:
+- **Unlock only after:** 10 cleanups confirmed *in person* (AI-only and skipped checks don't count), checked by 5+ different people, on spots reported by 5+ different people, and an account at least 14 days old.
+- **Locked for good** after any failed check, "still dirty" flag or fake photo, or complaints from 2+ different users. Brand-new accounts can't file complaints.
+- Donations go to the **person, not a specific cleanup**, so there's no per-spot payout to farm.
+- **$1–$20 per donation, max $50 per month** per volunteer.
+- Every donation is **held 7 days** and refunded automatically if the volunteer gets locked during that time.
+- Donations are recorded only for now. Real payouts would go through Stripe Connect with the same hold.
+- For a demo, set `DONATION_DEMO=1` to lower the unlock bar to 2 confirmed cleanups by 2 different people.
 
 ## Tech
 

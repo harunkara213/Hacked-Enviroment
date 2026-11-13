@@ -38,24 +38,32 @@ class Assessment(BaseModel):
     estimated_minutes: int = Field(description="Estimated minutes for one person to clean it")
     hazards: list[str] = Field(description="Hazards to warn volunteers about, e.g. broken glass, needles. Empty if none")
     summary: str = Field(description="One short sentence describing the spot for volunteers")
+    looks_fake: bool = Field(description="True if any photo looks like a photo of a screen, a screenshot, a stock/web image, or AI-generated/edited")
 
 
 class Verification(BaseModel):
     same_place: bool = Field(description="True if the AFTER photo plausibly shows the same location as the BEFORE photos")
     percent_cleaned: int = Field(description="0-100: how much of the litter from BEFORE is gone in AFTER")
     comment: str = Field(description="One short, encouraging sentence for the volunteer about the result")
+    looks_fake: bool = Field(description="True if the AFTER photo looks like a photo of a screen, a screenshot, a stock/web image, or AI-generated/edited")
 
+
+FAKE_RULE = """Also check for cheating: set looks_fake=true only if a photo is clearly a picture of a screen
+(moire, pixels, bezels), a screenshot, a stock/web image (watermark, studio look) or AI-generated/edited.
+Normal phone photos, even blurry or dark ones, are NOT fake."""
 
 ASSESS_PROMPT = """You are the scoring engine for a community cleanup app.
 Volunteers earn points for cleaning the spot in these photos.
 Look at all photos (they may show the same spot from different angles) and assess the litter.
 If the photos do not show litter (e.g. a selfie, a clean room, a random object), set is_litter=false.
-Be realistic: a few cans = difficulty 1, a picnic mess = 2-3, an illegal dump or hazardous items = 4-5."""
+Be realistic: a few cans = difficulty 1, a picnic mess = 2-3, an illegal dump or hazardous items = 4-5.
+""" + FAKE_RULE
 
 VERIFY_PROMPT = """You are verifying a volunteer cleanup for a community cleanup app.
 The first image(s) are BEFORE photos of a dirty spot. The LAST image is the AFTER photo the volunteer took.
 Decide whether the AFTER photo shows the same place, and how much of the litter is gone.
-Be fair but strict: a photo of a different clean place is NOT a cleanup."""
+Be fair but strict: a photo of a different clean place is NOT a cleanup.
+""" + FAKE_RULE
 
 
 # ---------- scoring ----------
@@ -117,6 +125,7 @@ def assess_spot(images: list[tuple[bytes, str]]) -> dict:
         "estimated_minutes": 10 * difficulty + 5 * bags,
         "hazards": [],
         "summary": "Litter reported here (demo mode: AI offline).",
+        "looks_fake": False,
         "points": points_for(difficulty, bags),
         "source": "demo",
     }
@@ -132,5 +141,5 @@ def verify_cleanup(before: list[tuple[bytes, str]], after: tuple[bytes, str]) ->
             global LAST_ERROR
             LAST_ERROR = repr(e)[:300]
             print(f"[ai] verify failed, using demo mode: {e!r}")
-    return {"same_place": True, "percent_cleaned": 100,
+    return {"same_place": True, "percent_cleaned": 100, "looks_fake": False,
             "comment": "Nice work! (demo mode: AI offline)", "source": "demo"}

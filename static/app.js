@@ -90,6 +90,139 @@ function go(tab) {
   if (tab === 'map') setTimeout(() => map.invalidateSize(), 50);
   if (tab === 'leaders') loadLeaders();
   if (tab === 'me') loadMe();
+  if (tab === 'tasks') loadTasks();
+}
+
+// Clickable username that opens their profile.
+const userLink = (n) => `<a data-user="${esc(n)}" onclick="openUser(this.dataset.user)" class="font-semibold underline decoration-dotted cursor-pointer">${esc(n)}</a>`;
+const money = (cents) => '$' + (cents / 100).toFixed(cents % 100 ? 2 : 0);
+
+// ---------- tasks: nearest / most points ----------
+let sortMode = storeGet('he_sort') || 'near';
+let myPos = null;
+
+function setSort(m) { sortMode = m; storeSet('he_sort', m); loadTasks(); }
+
+async function loadTasks() {
+  $('sortNear').className = 'rounded-xl py-2 ' + (sortMode === 'near' ? 'bg-white text-forest-900' : 'text-white/80');
+  $('sortPoints').className = 'rounded-xl py-2 ' + (sortMode === 'points' ? 'bg-white text-forest-900' : 'text-white/80');
+  if (!myPos) {
+    try { myPos = await getLocation(); } catch { const c = map.getCenter(); myPos = { lat: c.lat, lng: c.lng, guess: true }; }
+  }
+  const dist = (s) => map.distance([myPos.lat, myPos.lng], [s.lat, s.lng]);
+  const fmt = (m) => (m < 1000 ? `${Math.round(m / 10) * 10} m` : `${(m / 1000).toFixed(1)} km`);
+  const list = spots
+    .filter((s) => s.status === 'open' || (s.status === 'claimed' && s.claimed_by === me) || canVerify(s))
+    .map((s) => ({ ...s, d: dist(s) }))
+    .sort((a, b) => (sortMode === 'near' ? a.d - b.d : b.points - a.points || a.d - b.d));
+  $('tasksSub').textContent = myPos.guess ? 'Location off: distances are from the map center.' : `${list.length} spot${list.length === 1 ? '' : 's'} waiting for you.`;
+  $('taskList').innerHTML = list.length ? list.map((s, i) => {
+    const tag = canVerify(s) ? '<span class="text-indigo-600">🔍 Check · +10</span>'
+      : s.claimed_by === me ? '<span class="text-amber-600">⏳ Yours: go clean</span>'
+      : s.reporter === me ? '<span class="text-slate-400">You reported</span>' : '';
+    const best = i === 0 ? (sortMode === 'near' ? 'Closest' : 'Top points') : '';
+    return `<button onclick="go('map'); map.setView([${s.lat}, ${s.lng}], 17); openSpot('${s.id}')"
+      class="w-full flex items-center gap-3 bg-white rounded-2xl p-2.5 shadow-sm text-left ${i === 0 ? 'ring-2 ring-forest-400' : ''}">
+      <img src="${esc(s.photos[0])}" class="w-16 h-16 rounded-xl object-cover" alt="">
+      <div class="flex-1 min-w-0">
+        ${best ? `<div class="text-[10px] font-extrabold uppercase tracking-wide text-forest-600">${best}</div>` : ''}
+        <div class="font-bold text-sm truncate">${esc(s.summary)}</div>
+        <div class="text-xs text-slate-500 mt-0.5">📍 ${fmt(s.d)} · <span style="color:${DIFF_COLOR[s.difficulty]}">${DIFF[s.difficulty]}</span> · ~${s.minutes} min ${tag ? '· ' + tag : ''}</div>
+      </div>
+      <div class="text-right shrink-0"><div class="text-xl font-extrabold text-forest-700 leading-none">${s.points}</div><div class="text-[10px] text-slate-500 font-semibold">pts</div></div>
+    </button>`;
+  }).join('') : '<div class="text-sm text-slate-500 bg-white rounded-2xl p-6 text-center">No open spots right now. Report one with the + button!</div>';
+}
+
+// ---------- user profile: donate / report ----------
+function donationRules(d) {
+  return d.rules.map((r) => `
+    <div class="flex items-center gap-2 text-sm py-1">
+      <span>${r.ok ? '✅' : r.permanent ? '⛔' : '⬜'}</span>
+      <span class="flex-1 ${r.ok ? 'text-slate-700' : 'text-slate-500'}">${esc(r.label)}</span>
+      ${r.permanent ? '' : `<span class="text-xs font-bold text-slate-400">${Math.min(r.have, r.need)}/${r.need}</span>`}
+    </div>`).join('');
+}
+
+function donationCard(d, mine) {
+  if (d.locked) {
+    return `<div class="rounded-2xl bg-rose-50 p-4 text-sm text-rose-800">
+      <div class="font-extrabold">⛔ Donations locked</div>
+      <div class="mt-1">${mine ? 'Your account' : 'This account'} has a failed check, a fake photo or complaints from other users. Donations stay off for good so nobody can litter for money.</div>
+      ${d.refunded_cents ? `<div class="mt-1 font-semibold">${money(d.refunded_cents)} in held donations was refunded.</div>` : ''}
+    </div>`;
+  }
+  if (d.eligible) {
+    return `<div class="rounded-2xl bg-amber-50 p-4">
+      <div class="font-extrabold text-amber-900">💛 Verified Cleaner: donations on</div>
+      <div class="text-sm text-amber-900/80 mt-1">${money(d.released_cents)} received · ${money(d.held_cents)} on 7-day hold · ${money(d.room_cents)} left this month</div>
+    </div>`;
+  }
+  return `<div class="rounded-2xl bg-white p-4 shadow-sm">
+    <div class="font-extrabold text-slate-800">💛 Unlock donations</div>
+    <div class="text-xs text-slate-500 mt-0.5 mb-2">Only for proven volunteers. One problem locks it forever.</div>
+    ${donationRules(d)}
+  </div>`;
+}
+
+async function openUser(name) {
+  let p;
+  try { p = await api('/api/users/' + encodeURIComponent(name)); } catch (e) { return toast(e.message, 'err'); }
+  const d = p.donations;
+  const isMe = name === me;
+  const donate = !isMe && d.eligible ? `
+    <div class="mt-4 font-extrabold text-slate-800">Support ${esc(name)}</div>
+    <div class="grid grid-cols-3 gap-2 mt-2">
+      ${[2, 5, 10].map((a) => `<button data-user="${esc(name)}" onclick="donateTo(this.dataset.user, ${a})" class="rounded-2xl bg-amber-400 text-amber-950 font-extrabold py-3 active:scale-95 transition">$${a}</button>`).join('')}
+    </div>
+    <p class="text-[11px] text-slate-500 mt-2 text-center">Held 7 days and refunded if any problem shows up. Demo: no real money moves yet.</p>` : '';
+  const report = !isMe ? `
+    <details class="mt-5">
+      <summary class="text-sm text-slate-500 underline cursor-pointer text-center">🚩 Report ${esc(name)}</summary>
+      <div class="mt-3 grid grid-cols-2 gap-2 text-sm font-semibold">
+        ${[['fake_photos', '📷 Fake photos'], ['littering', '🗑️ Seen littering'], ['fake_cleanup', '🧹 Fake cleanup'], ['other', '❓ Other']]
+          .map(([r, l]) => `<button data-user="${esc(name)}" onclick="reportUser(this.dataset.user, '${r}')" class="rounded-xl bg-slate-100 py-2.5">${l}</button>`).join('')}
+      </div>
+    </details>` : '';
+  openSheet(`
+    <div class="mx-auto w-10 h-1.5 rounded-full bg-slate-200 mb-4"></div>
+    <div class="flex items-center gap-3">
+      <div class="w-14 h-14 rounded-full bg-forest-100 grid place-items-center text-2xl">${d.eligible ? '💛' : '🌱'}</div>
+      <div class="flex-1 min-w-0">
+        <div class="text-xl font-extrabold truncate">${esc(name)}</div>
+        <div class="text-sm text-slate-500">${esc(p.level.title)} · ${p.points} pts${p.rank ? ' · #' + p.rank : ''}</div>
+      </div>
+    </div>
+    <div class="grid grid-cols-3 gap-2 mt-4 text-center">
+      <div class="bg-slate-50 rounded-2xl py-2"><div class="text-lg font-extrabold">${p.cleanups}</div><div class="text-[11px] text-slate-500">cleanups</div></div>
+      <div class="bg-slate-50 rounded-2xl py-2"><div class="text-lg font-extrabold">${p.verifications}</div><div class="text-[11px] text-slate-500">checks</div></div>
+      <div class="bg-slate-50 rounded-2xl py-2"><div class="text-lg font-extrabold">${p.bags}</div><div class="text-[11px] text-slate-500">bags</div></div>
+    </div>
+    <div class="mt-4">${donationCard(d, isMe)}</div>
+    ${donate}
+    ${report}`);
+}
+
+async function donateTo(name, amount) {
+  const fd = new FormData();
+  fd.append('user', me);
+  fd.append('amount', amount);
+  try {
+    const r = await api(`/api/users/${encodeURIComponent(name)}/donate`, { method: 'POST', body: fd });
+    toast(`💛 ${money(r.amount_cents)} to ${name}, released in ${r.held_days} days`);
+    openUser(name);
+  } catch (e) { toast(e.message, 'err'); }
+}
+
+async function reportUser(name, reason) {
+  const fd = new FormData();
+  fd.append('user', me);
+  fd.append('reason', reason);
+  try {
+    await api(`/api/users/${encodeURIComponent(name)}/complain`, { method: 'POST', body: fd });
+    toast(`Thanks. We'll keep an eye on ${name}.`);
+    openUser(name);
+  } catch (e) { toast(e.message, 'err'); }
 }
 
 // ---------- user ----------
@@ -213,7 +346,7 @@ function openSpot(id) {
     const by = s.verified_by ? `✅ Verified in person by ${esc(s.verified_by)}` : esc(s.verify_note || '');
     action = `
       <div class="mt-5 rounded-2xl bg-forest-50 p-4">
-        <div class="font-extrabold text-forest-800">✨ Cleaned by ${esc(s.cleaner)}</div>
+        <div class="font-extrabold text-forest-800">✨ Cleaned by ${userLink(s.cleaner)}</div>
         <div class="text-sm text-forest-800/80 mt-0.5">${by}</div>
         ${beforeAfter(s.verify_photo)}
         <div class="text-sm font-bold text-forest-700 mt-3">+${s.awarded} pts · ${s.percent_cleaned}% clean</div>
@@ -281,7 +414,7 @@ function openSpot(id) {
       <div class="rounded-xl bg-slate-50 px-3 py-2">⏱️ ~<b>${s.minutes}</b> min</div>
     </div>
     ${hazards}
-    <div class="text-xs text-slate-400 mt-3">Reported by ${esc(s.reporter)} · ${timeAgo(s.created_at)}${s.ai_source === 'demo' ? ' · demo score' : ''}</div>
+    <div class="text-xs text-slate-400 mt-3">Reported by ${userLink(s.reporter)} · ${timeAgo(s.created_at)}${s.ai_source === 'demo' ? ' · demo score' : ''}</div>
     ${s.status === 'open' ? note : ''}
     ${action}`);
 }
@@ -446,7 +579,7 @@ async function loadLeaders() {
       <div class="text-forest-700 font-bold text-sm">${r.points} pts</div></div>`;
   }).join('');
   $('leaderList').innerHTML = rows.length ? rows.map((r, i) => `
-    <li class="flex items-center gap-3 px-4 py-3 ${r.user === me ? 'bg-forest-50' : ''}">
+    <li data-user="${esc(r.user)}" onclick="openUser(this.dataset.user)" class="flex items-center gap-3 px-4 py-3 cursor-pointer ${r.user === me ? 'bg-forest-50' : ''}">
       <div class="w-7 text-center font-extrabold text-slate-400">${i + 1}</div>
       <div class="flex-1 min-w-0">
         <div class="font-bold truncate">${esc(r.user)}${r.user === me ? ' (you)' : ''}</div>
@@ -479,6 +612,7 @@ async function loadMe() {
     `🔍 ${p.verifications} check${p.verifications === 1 ? '' : 's'} done`,
     p.on_hold ? `⏳ ${p.on_hold} pts on hold` : '',
   ].filter(Boolean).map((t) => `<span class="bg-white/15 rounded-full px-3 py-1">${t}</span>`).join('');
+  $('meDonations').innerHTML = donationCard(p.donations, true);
 
   const mine = spots.filter((s) => s.reporter === me || s.cleaner === me || s.claimed_by === me || canVerify(s));
   $('myActivity').innerHTML = mine.length ? mine.map((s) => {

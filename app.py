@@ -45,6 +45,19 @@ FLAG_REWARD = 10
 TRUSTED_MIN_CLEANUPS = 3           # after this many confirmed cleanups with no strikes...
 TRUSTED_SKIP_RATE = float(os.getenv("TRUSTED_SKIP_RATE", "0.8"))  # ...only 20% get spot-checked
 
+# Donations: only for proven, clean-record volunteers. Any strike or 2+ complaints = locked for good.
+# DONATION_DEMO=1 lowers the bar so the flow can be shown at a hackathon.
+_DEMO = os.getenv("DONATION_DEMO") == "1"
+DON_MIN_VERIFIED = 2 if _DEMO else 10      # cleanups confirmed IN PERSON (not AI-only, not skipped)
+DON_MIN_VERIFIERS = 2 if _DEMO else 5      # ...by this many different people (no friend rings)
+DON_MIN_REPORTERS = 1 if _DEMO else 5      # ...on spots reported by this many different people
+DON_MIN_DAYS = 0 if _DEMO else 14          # account age
+DON_MAX_COMPLAINTS = 1                     # 2+ complaints from different users locks donations
+DON_MONTHLY_CAP_CENTS = 5000               # max $50 per cleaner per month: not worth littering for
+DON_HOLD_S = 7 * 24 * 3600                 # donations are held 7 days and refunded if a problem shows up
+COMPLAINT_REASONS = {"fake_photos", "littering", "fake_cleanup", "harassment", "other"}
+STRIKE_KINDS = ("rejected", "revoke", "fake")
+
 LEVELS = [  # (min points, title)
     (0, "Seedling"),
     (100, "Sprout"),
@@ -92,6 +105,15 @@ def init_db():
         );
         CREATE TABLE IF NOT EXISTS users (
             name TEXT PRIMARY KEY, lat REAL, lng REAL, seen REAL
+        );
+        CREATE TABLE IF NOT EXISTS complaints (
+            from_user TEXT NOT NULL, about_user TEXT NOT NULL, reason TEXT NOT NULL,
+            spot_id TEXT, ts REAL NOT NULL, UNIQUE(from_user, about_user)
+        );
+        CREATE TABLE IF NOT EXISTS donations (
+            id TEXT PRIMARY KEY, donor TEXT NOT NULL, cleaner TEXT NOT NULL,
+            amount_cents INTEGER NOT NULL, ts REAL NOT NULL,
+            status TEXT NOT NULL DEFAULT 'held', release_at REAL NOT NULL
         );
         """)
         have = {r[1] for r in c.execute("PRAGMA table_info(spots)")}
@@ -197,10 +219,62 @@ def award(c, user, points, kind, spot_id) -> int:
 
 def trust_of(c, user) -> dict:
     r = c.execute("""SELECT COALESCE(SUM(kind='clean'),0) AS cleanups,
-                            COALESCE(SUM(kind IN ('rejected','revoke')),0) AS strikes
+                            COALESCE(SUM(kind IN ('rejected','revoke','fake')),0) AS strikes
                      FROM events WHERE user=?""", (user,)).fetchone()
     trusted = r["cleanups"] >= TRUSTED_MIN_CLEANUPS and r["strikes"] == 0
     return {"cleanups": r["cleanups"], "strikes": r["strikes"], "trusted": trusted}
+
+
+def strike_fake(user, spot_id, who="Your"):
+    """AI thinks a photo is a screen/screenshot/AI image: record a strike and refuse."""
+    with closing(db()) as c, c:
+        award(c, user, 0, "fake", spot_id)
+    raise HTTPException(422, f"{who} photo looks fake (a screen, screenshot or edited image). "
+                             "This counts as a strike. Take a real photo at the spot.")
+
+
+def donation_status(c, user) -> dict:
+    """Every rule must pass. Problems (strikes, complaints) lock donations permanently."""
+    t = trust_of(c, user)
+    v = c.execute("""SELECT COUNT(*) AS n, COUNT(DISTINCT verified_by) AS verifiers,
+                            COUNT(DISTINCT reporter) AS reporters
+                     FROM spots WHERE cleaner=? AND status='cleaned' AND verified_by IS NOT NULL""",
+                  (user,)).fetchone()
+    complaints = c.execute("SELECT COUNT(DISTINCT from_user) FROM complaints WHERE about_user=?",
+                           (user,)).fetchone()[0]
+    first = c.execute("SELECT MIN(ts) FROM events WHERE user=?", (user,)).fetchone()[0]
+    days = (time.time() - first) / 86400 if first else 0
+    month = c.execute("""SELECT COALESCE(SUM(amount_cents),0) FROM donations
+                         WHERE cleaner=? AND status!='refunded' AND ts>?""",
+                      (user, time.time() - 30 * 86400)).fetchone()[0]
+    rules = [
+        {"label": f"{DON_MIN_VERIFIED} cleanups confirmed in person", "have": v["n"], "need": DON_MIN_VERIFIED,
+         "ok": v["n"] >= DON_MIN_VERIFIED},
+        {"label": f"Checked by {DON_MIN_VERIFIERS}+ different people", "have": v["verifiers"],
+         "need": DON_MIN_VERIFIERS, "ok": v["verifiers"] >= DON_MIN_VERIFIERS},
+        {"label": f"Spots reported by {DON_MIN_REPORTERS}+ different people", "have": v["reporters"],
+         "need": DON_MIN_REPORTERS, "ok": v["reporters"] >= DON_MIN_REPORTERS},
+        {"label": f"Member for {DON_MIN_DAYS}+ days", "have": int(days), "need": DON_MIN_DAYS,
+         "ok": days >= DON_MIN_DAYS},
+        {"label": "No failed checks, flags or fake photos, ever", "have": t["strikes"], "need": 0,
+         "ok": t["strikes"] == 0, "permanent": True},
+        {"label": "No complaints from other users", "have": complaints, "need": 0,
+         "ok": complaints <= DON_MAX_COMPLAINTS, "permanent": True},
+    ]
+    locked = t["strikes"] > 0 or complaints > DON_MAX_COMPLAINTS
+    return {"eligible": all(r["ok"] for r in rules), "locked": locked, "rules": rules,
+            "complaints": complaints, "month_cents": month,
+            "room_cents": max(0, DON_MONTHLY_CAP_CENTS - month)}
+
+
+def settle_donations(c, user):
+    """Held donations: refund everything if the cleaner got locked, else release after the hold."""
+    st = donation_status(c, user)
+    if st["locked"]:
+        c.execute("UPDATE donations SET status='refunded' WHERE cleaner=? AND status='held'", (user,))
+    else:
+        c.execute("UPDATE donations SET status='released' WHERE cleaner=? AND status='held' AND release_at<?",
+                  (user, time.time()))
 
 
 def pick_verifier(c, spot, exclude: set[str]):
@@ -287,6 +361,8 @@ async def report_spot(
     images = [await read_photo(p) for p in photos]
 
     result = ai.assess_spot(images)
+    if result.get("looks_fake"):
+        strike_fake(user, None)
     if not result["is_litter"]:
         raise HTTPException(422, "The AI couldn't find litter in these photos. Try a clearer shot of the trash.")
 
@@ -348,6 +424,8 @@ async def clean_spot(
     before = [load_photo(p) for p in json.loads(s["photos"])]
     v = ai.verify_cleanup(before, after)
 
+    if v.get("looks_fake"):
+        strike_fake(user, spot_id)
     if not v["same_place"]:
         raise HTTPException(422, "The after photo doesn't look like the same place. " + v["comment"])
     if v["percent_cleaned"] < MIN_PERCENT_CLEANED:
@@ -411,6 +489,8 @@ async def verify_spot(
     check = await read_photo(photo)
     before = [load_photo(p) for p in json.loads(s["photos"])]
     v = ai.verify_cleanup(before, check)
+    if v.get("looks_fake"):
+        strike_fake(user, spot_id)
     if not v["same_place"]:
         raise HTTPException(422, "Your photo doesn't look like the same place. Take it where the trash was.")
 
@@ -462,6 +542,8 @@ async def flag_spot(
     require_on_site(s, lat, lng, "photo")
     img = await read_photo(photo)
     a = ai.assess_spot([img])
+    if a.get("looks_fake"):
+        strike_fake(user, spot_id)
     if not a["is_litter"]:
         raise HTTPException(422, "The AI doesn't see litter in your photo. Looks clean!")
 
@@ -481,6 +563,47 @@ async def flag_spot(
                   (json.dumps(photos), f"{user} flagged it as still dirty. Points were taken back.", spot_id))
         row = get_spot(c, spot_id)
     return {"spot": spot_out(row), "reward": reward}
+
+
+@app.post("/api/users/{name}/complain")
+def complain(name: str, user: str = Form(...), reason: str = Form(...), spot_id: str | None = Form(None)):
+    """Report a user (fake photos, littering...). 2+ complaints from different people lock donations."""
+    name, user = clean_name(name), clean_name(user)
+    if name == user:
+        raise HTTPException(400, "You can't report yourself.")
+    if reason not in COMPLAINT_REASONS:
+        raise HTTPException(400, "Pick a reason.")
+    with closing(db()) as c, c:
+        active = c.execute("SELECT COUNT(*) FROM events WHERE user=?", (user,)).fetchone()[0]
+        if not active:
+            raise HTTPException(403, "Report, clean or check a spot first. Brand-new accounts can't file complaints.")
+        cur = c.execute("INSERT OR IGNORE INTO complaints VALUES (?,?,?,?,?)",
+                        (user, name, reason, spot_id, time.time()))
+        if cur.rowcount == 0:
+            raise HTTPException(409, f"You already reported {name}.")
+        settle_donations(c, name)
+    return {"ok": True}
+
+
+@app.post("/api/users/{name}/donate")
+def donate(name: str, user: str = Form(...), amount: float = Form(...)):
+    """Support a proven volunteer. Recorded only (no real payment yet), held 7 days, refunded on any problem."""
+    name, user = clean_name(name), clean_name(user)
+    if name == user:
+        raise HTTPException(400, "You can't donate to yourself.")
+    cents = round(amount * 100)
+    if not 100 <= cents <= 2000:
+        raise HTTPException(400, "Donations are $1 to $20.")
+    with closing(db()) as c, c:
+        st = donation_status(c, name)
+        if not st["eligible"]:
+            raise HTTPException(403, f"{name} can't receive donations.")
+        if cents > st["room_cents"]:
+            raise HTTPException(409, f"{name} reached this month's donation limit "
+                                     f"(${DON_MONTHLY_CAP_CENTS // 100}). Thanks anyway!")
+        c.execute("INSERT INTO donations VALUES (?,?,?,?,?,?,?)",
+                  (uuid.uuid4().hex[:12], user, name, cents, time.time(), "held", time.time() + DON_HOLD_S))
+    return {"ok": True, "amount_cents": cents, "held_days": DON_HOLD_S // 86400}
 
 
 @app.get("/api/leaderboard")
@@ -510,8 +633,15 @@ def profile(name: str):
             "SELECT id FROM spots WHERE status='pending' AND verifier=?", (name,)).fetchall()]
         trust = trust_of(c, name)
         ranked = c.execute("SELECT user FROM events GROUP BY user ORDER BY SUM(points) DESC").fetchall()
+    with closing(db()) as c, c:
+        settle_donations(c, name)
+        don = donation_status(c, name)
+        sums = dict(c.execute("""SELECT status, SUM(amount_cents) FROM donations WHERE cleaner=?
+                                 GROUP BY status""", (name,)).fetchall())
     users = [x[0] for x in ranked]
     rank = users.index(name) + 1 if name in users else None
     return {"user": name, **dict(r), "bags": bags, "rank": rank, "total_users": len(users),
             "level": level_for(r["points"]), "on_hold": on_hold, "to_verify": to_verify,
-            "trusted": trust["trusted"], "strikes": trust["strikes"]}
+            "trusted": trust["trusted"], "strikes": trust["strikes"],
+            "donations": {**don, "held_cents": sums.get("held", 0), "released_cents": sums.get("released", 0),
+                          "refunded_cents": sums.get("refunded", 0), "monthly_cap_cents": DON_MONTHLY_CAP_CENTS}}
