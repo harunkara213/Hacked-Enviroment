@@ -9,7 +9,6 @@ import json
 import math
 import os
 import random
-import sqlite3
 import time
 import uuid
 from contextlib import closing
@@ -19,16 +18,14 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile  # noqa: E402
+from fastapi import FastAPI, File, Form, HTTPException, Response, UploadFile  # noqa: E402
 from fastapi.responses import FileResponse  # noqa: E402
 from fastapi.staticfiles import StaticFiles  # noqa: E402
 
 import ai  # noqa: E402
+import db as dbmod  # noqa: E402
 
 BASE = Path(__file__).parent
-DB_PATH = Path(os.getenv("DB_PATH", BASE / "data.db"))
-UPLOADS = Path(os.getenv("UPLOADS_DIR", BASE / "uploads"))
-UPLOADS.mkdir(parents=True, exist_ok=True)
 
 MAX_PHOTOS = 4
 MAX_PHOTO_BYTES = 8 * 1024 * 1024
@@ -76,9 +73,8 @@ LEVELS = [  # (min points, title)
 # ---------- database ----------
 
 def db():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
+    """Postgres on Render (DATABASE_URL), SQLite file locally. See db.py."""
+    return dbmod.connect()
 
 
 SPOT_EXTRA_COLUMNS = {
@@ -122,8 +118,11 @@ def init_db():
             amount_cents INTEGER NOT NULL, ts REAL NOT NULL,
             status TEXT NOT NULL DEFAULT 'held', release_at REAL NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS photos (
+            name TEXT PRIMARY KEY, mime TEXT NOT NULL, data BLOB NOT NULL
+        );
         """)
-        have = {r[1] for r in c.execute("PRAGMA table_info(spots)")}
+        have = c.columns("spots")
         for col, typ in SPOT_EXTRA_COLUMNS.items():
             if col not in have:
                 c.execute(f"ALTER TABLE spots ADD COLUMN {col} {typ}")
@@ -165,20 +164,28 @@ async def read_photo(f: UploadFile) -> tuple[bytes, str]:
     return data, mime
 
 
-def save_photo(data: bytes, mime: str) -> str:
+def save_photo(data: bytes, mime: str, c=None) -> str:
+    """Photos live in the database (not on disk) so they survive Render restarts.
+    Pass `c` when already inside a write transaction, so SQLite doesn't lock itself."""
     ext = {"image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp"}[mime]
     name = uuid.uuid4().hex + ext
-    (UPLOADS / name).write_bytes(data)
+    if c is not None:
+        c.execute("INSERT INTO photos (name, mime, data) VALUES (?,?,?)", (name, mime, data))
+    else:
+        with closing(db()) as c2, c2:
+            c2.execute("INSERT INTO photos (name, mime, data) VALUES (?,?,?)", (name, mime, data))
     return name
 
 
 def load_photo(name: str) -> tuple[bytes, str]:
-    ext = Path(name).suffix
-    mime = {".jpg": "image/jpeg", ".png": "image/png", ".webp": "image/webp"}[ext]
-    return (UPLOADS / name).read_bytes(), mime
+    with closing(db()) as c:
+        r = c.execute("SELECT data, mime FROM photos WHERE name=?", (name,)).fetchone()
+    if not r:
+        raise HTTPException(410, "A photo for this spot is missing. Please report the spot again.")
+    return bytes(r["data"]), r["mime"]
 
 
-def spot_out(r: sqlite3.Row) -> dict:
+def spot_out(r) -> dict:
     d = dict(r)
     d["photos"] = ["/uploads/" + p for p in json.loads(d["photos"])]
     d["hazards"] = json.loads(d["hazards"] or "[]")
@@ -227,8 +234,8 @@ def award(c, user, points, kind, spot_id) -> int:
 
 
 def trust_of(c, user) -> dict:
-    r = c.execute("""SELECT COALESCE(SUM(kind='clean'),0) AS cleanups,
-                            COALESCE(SUM(kind IN ('rejected','revoke','fake')),0) AS strikes
+    r = c.execute("""SELECT COALESCE(SUM(CASE WHEN kind='clean' THEN 1 ELSE 0 END),0) AS cleanups,
+                            COALESCE(SUM(CASE WHEN kind IN ('rejected','revoke','fake') THEN 1 ELSE 0 END),0) AS strikes
                      FROM events WHERE user=?""", (user,)).fetchone()
     trusted = r["cleanups"] >= TRUSTED_MIN_CLEANUPS and r["strikes"] == 0
     return {"cleanups": r["cleanups"], "strikes": r["strikes"], "trusted": trusted}
@@ -320,8 +327,18 @@ def level_for(points: int) -> dict:
 # ---------- app ----------
 
 app = FastAPI(title="Hacker Environment")
-app.mount("/uploads", StaticFiles(directory=UPLOADS), name="uploads")
 app.mount("/static", StaticFiles(directory=BASE / "static"), name="static")
+
+
+@app.get("/uploads/{name}")
+def photo(name: str):
+    with closing(db()) as c:
+        r = c.execute("SELECT data, mime FROM photos WHERE name=?", (name,)).fetchone()
+    if not r:
+        raise HTTPException(404, "Photo not found.")
+    # Names are random and never reused, so browsers can cache them forever.
+    return Response(bytes(r["data"]), media_type=r["mime"],
+                    headers={"Cache-Control": "public, max-age=31536000, immutable"})
 
 
 @app.get("/")
@@ -484,7 +501,7 @@ async def clean_spot(
     earned = round(s["points"] * v["percent_cleaned"] / 100)
     with closing(db()) as c, c:
         seen(c, user, lat, lng)
-        name = save_photo(*after)
+        name = save_photo(*after, c=c)
         t = trust_of(c, user)
         # Solo cleanups and reporter cleanups always receive an independent check.
         skip = not s["self_clean"] and user != s["reporter"] and t["trusted"] and random.random() < TRUSTED_SKIP_RATE
@@ -519,7 +536,7 @@ async def start_spot(spot_id: str, user: str = Form(...), lat: float = Form(...)
         if s["status"] != "claimed" or s["claimed_by"] != user:
             raise HTTPException(409, "Claim this spot first.")
         require_on_site(s, lat, lng, "before photo")
-        name = save_photo(*before)
+        name = save_photo(*before, c=c)
         c.execute("UPDATE spots SET task_before_photo=? WHERE id=? AND status='claimed' AND claimed_by=?",
                   (name, spot_id, user))
         row = get_spot(c, spot_id)
@@ -563,7 +580,7 @@ async def verify_spot(
 
     with closing(db()) as c, c:
         seen(c, user, lat, lng)
-        name = save_photo(*check)
+        name = save_photo(*check, c=c)
         if verdict == "clean":
             got = award(c, s["cleaner"], s["pending_points"] or 0, "clean", spot_id)
             reward = award(c, user, VERIFY_REWARD, "verify", spot_id)
@@ -616,7 +633,7 @@ async def flag_spot(
 
     with closing(db()) as c, c:
         seen(c, user, lat, lng)
-        name = save_photo(*img)
+        name = save_photo(*img, c=c)
         if s["awarded"]:
             award(c, s["cleaner"], -s["awarded"], "revoke", spot_id)
         else:
@@ -644,7 +661,7 @@ def complain(name: str, user: str = Form(...), reason: str = Form(...), spot_id:
         active = c.execute("SELECT COUNT(*) FROM events WHERE user=?", (user,)).fetchone()[0]
         if not active:
             raise HTTPException(403, "Report, clean or check a spot first. Brand-new accounts can't file complaints.")
-        cur = c.execute("INSERT OR IGNORE INTO complaints VALUES (?,?,?,?,?)",
+        cur = c.execute("INSERT INTO complaints VALUES (?,?,?,?,?) ON CONFLICT DO NOTHING",
                         (user, name, reason, spot_id, time.time()))
         if cur.rowcount == 0:
             raise HTTPException(409, f"You already reported {name}.")
@@ -678,7 +695,7 @@ def leaderboard():
     with closing(db()) as c:
         rows = c.execute("""
             SELECT user, SUM(points) AS points,
-                   SUM(kind='clean') AS cleanups, SUM(kind='verify') AS verifications
+                   SUM(CASE WHEN kind='clean' THEN 1 ELSE 0 END) AS cleanups, SUM(CASE WHEN kind='verify' THEN 1 ELSE 0 END) AS verifications
             FROM events GROUP BY user ORDER BY points DESC, cleanups DESC LIMIT 50""").fetchall()
     return [{**dict(r), "level": level_for(r["points"])["title"]} for r in rows]
 
@@ -688,9 +705,9 @@ def profile(name: str):
     name = clean_name(name)
     with closing(db()) as c:
         r = c.execute("""SELECT COALESCE(SUM(points),0) AS points,
-                                COALESCE(SUM(kind='clean'),0) AS cleanups,
-                                COALESCE(SUM(kind='report'),0) AS reports,
-                                COALESCE(SUM(kind='verify'),0) AS verifications
+                                COALESCE(SUM(CASE WHEN kind='clean' THEN 1 ELSE 0 END),0) AS cleanups,
+                                COALESCE(SUM(CASE WHEN kind='report' THEN 1 ELSE 0 END),0) AS reports,
+                                COALESCE(SUM(CASE WHEN kind='verify' THEN 1 ELSE 0 END),0) AS verifications
                          FROM events WHERE user=?""", (name,)).fetchone()
         bags = c.execute("SELECT COALESCE(SUM(bags),0) FROM spots WHERE cleaner=? AND status='cleaned'",
                          (name,)).fetchone()[0]

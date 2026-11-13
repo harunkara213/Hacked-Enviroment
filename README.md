@@ -74,6 +74,8 @@ Open http://localhost:8000. Phones need HTTPS for the camera and GPS, so deploy 
 
 Push to GitHub, create a new Render **Blueprint** from the repo (it reads `render.yaml`), and set `GEMINI_API_KEY`.
 
+Data (spots, points, photos) lives in a free Render **Postgres** database that the Blueprint creates and connects through `DATABASE_URL`. Render's free web server wipes its own disk on every deploy and sleep, so nothing is stored there. Locally, without `DATABASE_URL`, the app uses a SQLite file (`data.db`) instead. Note: Render's free Postgres expires after 30 days.
+
 ## What's next
 
 - Donations unlocked only for trusted, verified volunteers
