@@ -30,6 +30,13 @@ Built at HackED Beta 2026.
 - Points are capped per user per day.
 - AI checks every photo for fakes (photo of a screen, screenshot, stock or AI image). A fake photo is a strike.
 
+### Solo cleanups ("I found it, I'll clean it myself")
+Found a mess and want to clean it right away? Tap **I'll clean it myself** on the Report screen. Your report photos become the before photos and the spot is yours to clean. To keep "litter, then clean it for points" from paying off:
+- Half points, no report bonus, and at most 3 solo cleanups a day.
+- The after photo can't come within 60 s of the before photo, and must be taken at the spot.
+- Always checked in person by a random nearby volunteer, even for trusted users.
+- Solo cleanups don't count toward unlocking donations.
+
 ### Tasks
 The Tasks tab lists open spots sorted by **nearest** or **most points**, plus any cleanup you were picked to check.
 

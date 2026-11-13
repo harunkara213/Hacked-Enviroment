@@ -450,7 +450,7 @@ function openSpot(id) {
           ${beforeAfter()}
         </div>`;
     }
-  } else if (s.reporter === me) {
+  } else if (s.reporter === me && !(s.status === 'claimed' && s.claimed_by === me)) {
     action = `<div class="mt-5 rounded-2xl bg-slate-100 p-4 text-sm text-slate-600 font-medium">You reported this spot. ${s.status === 'claimed' ? esc(s.claimed_by) + ' is cleaning it now 🙌' : 'Waiting for a volunteer to pick it up.'}</div>`;
   } else if (s.status === 'claimed' && s.claimed_by === me) {
     action = `
@@ -461,7 +461,9 @@ function openSpot(id) {
         📸 Upload after photo
         <input type="file" accept="image/*" capture="environment" class="hidden" onchange="submitClean('${s.id}', this)">
       </label>` : ''}
-      <p class="text-xs text-center text-slate-500 mt-2">Capture the on-site before photo before cleaning. Another volunteer checks the after photo.</p>`;
+      <p class="text-xs text-center text-slate-500 mt-2">${s.self_clean
+        ? '🧹 Solo cleanup: your report photos are the BEFORE photos. Clean it, then take the after photo from the same spot. A nearby volunteer will check it.'
+        : 'Capture the on-site before photo before cleaning. Another volunteer checks the after photo.'}</p>`;
   } else if (s.status === 'claimed') {
     action = `<div class="mt-5 rounded-2xl bg-amber-50 p-4 text-sm text-amber-800 font-semibold">⏳ ${esc(s.claimed_by)} is cleaning this spot.</div>`;
   } else {
@@ -602,6 +604,7 @@ function renderPending() {
       <button onclick="removePending(${i})" class="absolute top-2 right-2 w-8 h-8 rounded-full bg-black/60 text-white font-bold">×</button>
     </div>`).join('');
   $('submitReport').disabled = pending.length === 0;
+  $('submitSolo').disabled = pending.length === 0;
   $('addPhotoBtn').classList.toggle('hidden', pending.length >= 4);
   $('addPhotoLabel').textContent = pending.length ? `Add another angle (${pending.length}/4)` : 'Take a photo';
 }
@@ -616,7 +619,7 @@ async function addFiles(files) {
   renderPending();
 }
 
-async function submitReport() {
+async function submitReport(selfClean = false) {
   if (!pending.length) return;
   let pos;
   showLoading('Getting a precise GPS fix…', pending[0].url);
@@ -624,6 +627,7 @@ async function submitReport() {
     pos = await getLocation();
   } catch (e) {
     hideLoading();
+    if (selfClean) return toast('Solo cleanups need your GPS location. ' + e.message, 'err');
     if (!confirm(e.message + '\n\nUse the map center instead?')) return;
     const c = map.getCenter();
     pos = { lat: c.lat, lng: c.lng };
@@ -633,6 +637,7 @@ async function submitReport() {
   fd.append('user', me);
   fd.append('lat', pos.lat);
   fd.append('lng', pos.lng);
+  fd.append('self_clean', selfClean ? 'true' : 'false');
   pending.forEach((b, i) => fd.append('photos', b, `photo${i}.jpg`));
   try {
     const r = await api('/api/spots', { method: 'POST', body: fd });
@@ -645,7 +650,9 @@ async function submitReport() {
     go('map');
     map.setView([r.spot.lat, r.spot.lng], 17);
     openSpot(r.spot.id);
-    toast(`Posted! Worth ${r.spot.points} pts to a volunteer (+${r.report_bonus} for you)`);
+    toast(selfClean
+      ? `Solo cleanup started · ${r.spot.points} pts. Clean it, then upload the after photo.`
+      : `Posted! Worth ${r.spot.points} pts to a volunteer (+${r.report_bonus} for you)`);
   } catch (e) { hideLoading(); toast(e.message, 'err'); }
 }
 

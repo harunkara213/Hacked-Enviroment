@@ -58,6 +58,11 @@ DON_HOLD_S = 7 * 24 * 3600                 # donations are held 7 days and refun
 COMPLAINT_REASONS = {"fake_photos", "littering", "fake_cleanup", "harassment", "other"}
 STRIKE_KINDS = ("rejected", "revoke", "fake")
 
+# "I found it and I'm cleaning it myself": allowed, but made unattractive for anyone who'd litter first.
+SELF_CLEAN_FACTOR = 0.5            # half points
+SELF_CLEAN_DAILY_LIMIT = 3         # per user per 24h
+SELF_CLEAN_MIN_SECONDS = 60        # before -> after can't be instant
+
 LEVELS = [  # (min points, title)
     (0, "Seedling"),
     (100, "Sprout"),
@@ -81,6 +86,7 @@ SPOT_EXTRA_COLUMNS = {
     "excluded": "TEXT", "verified_by": "TEXT", "verified_at": "REAL",
     "verify_photo": "TEXT", "verify_note": "TEXT",
     "task_before_photo": "TEXT",
+    "self_clean": "INTEGER",
 }
 
 
@@ -241,7 +247,8 @@ def donation_status(c, user) -> dict:
     t = trust_of(c, user)
     v = c.execute("""SELECT COUNT(*) AS n, COUNT(DISTINCT verified_by) AS verifiers,
                             COUNT(DISTINCT reporter) AS reporters
-                     FROM spots WHERE cleaner=? AND status='cleaned' AND verified_by IS NOT NULL""",
+                     FROM spots WHERE cleaner=? AND status='cleaned' AND verified_by IS NOT NULL
+                       AND reporter != cleaner""",
                   (user,)).fetchone()
     complaints = c.execute("SELECT COUNT(DISTINCT from_user) FROM complaints WHERE about_user=?",
                            (user,)).fetchone()[0]
@@ -360,12 +367,22 @@ async def report_spot(
     lat: float = Form(...),
     lng: float = Form(...),
     photos: list[UploadFile] = File(...),
+    self_clean: bool = Form(False),
 ):
+    """Report a dirty spot. With self_clean=true the reporter cleans it themselves:
+    these photos become the BEFORE photos and the spot is claimed by them right away."""
     user = clean_name(user)
     if not -90 <= lat <= 90 or not -180 <= lng <= 180:
         raise HTTPException(400, "Invalid location.")
     if not 1 <= len(photos) <= MAX_PHOTOS:
         raise HTTPException(400, f"Add 1 to {MAX_PHOTOS} photos.")
+    if self_clean:
+        with closing(db()) as c:
+            n = c.execute("SELECT COUNT(*) FROM spots WHERE reporter=? AND self_clean=1 AND created_at>?",
+                          (user, time.time() - 24 * 3600)).fetchone()[0]
+        if n >= SELF_CLEAN_DAILY_LIMIT:
+            raise HTTPException(429, f"You can do {SELF_CLEAN_DAILY_LIMIT} solo cleanups a day. "
+                                     "Report it instead and let someone else clean it.")
     images = [await read_photo(p) for p in photos]
 
     result = ai.assess_spot(images)
@@ -376,6 +393,8 @@ async def report_spot(
 
     spot_id = uuid.uuid4().hex[:10]
     names = [save_photo(d, m) for d, m in images]
+    points = round(result["points"] * SELF_CLEAN_FACTOR) if self_clean else result["points"]
+    now = time.time()
     with closing(db()) as c, c:
         seen(c, user, lat, lng)
         c.execute("""INSERT INTO spots (id, lat, lng, reporter, photos, difficulty, bags, minutes,
@@ -383,8 +402,13 @@ async def report_spot(
                      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                   (spot_id, lat, lng, user, json.dumps(names), result["difficulty"],
                    result["estimated_bags"], result["estimated_minutes"], json.dumps(result["hazards"]),
-                   result["summary"], result["points"], result["source"], time.time()))
-        bonus = award(c, user, 5, "report", spot_id)
+                   result["summary"], points, result["source"], now))
+        if self_clean:
+            c.execute("""UPDATE spots SET self_clean=1, status='claimed', claimed_by=?, claimed_at=?,
+                         task_before_photo=? WHERE id=?""", (user, now, names[0], spot_id))
+            bonus = 0
+        else:
+            bonus = award(c, user, 5, "report", spot_id)
         row = get_spot(c, spot_id)
     return {"spot": spot_out(row), "report_bonus": bonus}
 
@@ -422,11 +446,13 @@ async def clean_spot(
         s = get_spot(c, spot_id)
     if s["status"] in ("pending", "cleaned"):
         raise HTTPException(409, "This spot has already been cleaned.")
-    if s["reporter"] == user:
+    if s["reporter"] == user and not s["self_clean"]:
         raise HTTPException(403, "You can't clean a spot you reported.")
     if s["status"] != "claimed" or s["claimed_by"] != user:
         raise HTTPException(409, "Claim this spot first.")
     require_on_site(s, lat, lng, "after photo")
+    if s["self_clean"] and time.time() - (s["claimed_at"] or 0) < SELF_CLEAN_MIN_SECONDS:
+        raise HTTPException(409, "That was fast! Finish cleaning, then take the after photo.")
 
     if not s["task_before_photo"]:
         raise HTTPException(409, "Take a before photo to start this cleanup first.")
@@ -446,7 +472,8 @@ async def clean_spot(
         seen(c, user, lat, lng)
         name = save_photo(*after)
         t = trust_of(c, user)
-        skip = t["trusted"] and random.random() < TRUSTED_SKIP_RATE
+        # Solo cleanups are ALWAYS checked in person, even for trusted volunteers.
+        skip = not s["self_clean"] and t["trusted"] and random.random() < TRUSTED_SKIP_RATE
         if skip:
             verifier, status_, awarded = None, "cleaned", None
         else:
@@ -477,7 +504,7 @@ async def start_spot(spot_id: str, user: str = Form(...), lat: float = Form(...)
         s = get_spot(c, spot_id)
         if s["status"] != "claimed" or s["claimed_by"] != user:
             raise HTTPException(409, "Claim this spot first.")
-        if s["reporter"] == user:
+        if s["reporter"] == user and not s["self_clean"]:
             raise HTTPException(403, "You can't clean a spot you reported.")
         require_on_site(s, lat, lng, "before photo")
         name = save_photo(*before)
@@ -544,7 +571,7 @@ async def verify_spot(
             reward = award(c, user, VERIFY_REWARD, "verify", spot_id)
             c.execute("""UPDATE spots SET status='open', claimed_by=NULL, claimed_at=NULL, cleaner=NULL,
                          after_photo=NULL, pending_points=NULL, verifier=NULL, verifier_assigned_at=NULL,
-                         excluded=NULL, verify_photo=?, verify_note=? WHERE id=?""",
+                         excluded=NULL, self_clean=0, verify_photo=?, verify_note=? WHERE id=?""",
                       (name, f"{user} found it still dirty. Back on the map!", spot_id))
             result = "rejected"
         row = get_spot(c, spot_id)
@@ -587,7 +614,7 @@ async def flag_spot(
         c.execute("""UPDATE spots SET status='open', photos=?, claimed_by=NULL, claimed_at=NULL, cleaner=NULL,
                      after_photo=NULL, pending_points=NULL, awarded=NULL, verifier=NULL,
                      verifier_assigned_at=NULL, excluded=NULL, verified_by=NULL, verified_at=NULL,
-                     verify_photo=NULL, verify_note=? WHERE id=?""",
+                     verify_photo=NULL, self_clean=0, verify_note=? WHERE id=?""",
                   (json.dumps(photos), f"{user} flagged it as still dirty. Points were taken back.", spot_id))
         row = get_spot(c, spot_id)
     return {"spot": spot_out(row), "reward": reward}
