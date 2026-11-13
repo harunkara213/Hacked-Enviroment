@@ -252,18 +252,19 @@ function openSpot(id) {
       <a href="https://www.google.com/maps/dir/?api=1&destination=${s.lat},${s.lng}" target="_blank" rel="noopener"
          class="mt-5 block text-center w-full rounded-2xl bg-slate-100 font-bold py-3.5">🧭 Directions</a>
       <label class="mt-2 block text-center w-full rounded-2xl bg-forest-500 text-white font-extrabold py-4 text-lg shadow-lg cursor-pointer active:scale-[.98] transition">
-        📸 I cleaned it: take after photo
+        📸 Upload after photo
         <input type="file" accept="image/*" capture="environment" class="hidden" onchange="submitClean('${s.id}', this)">
       </label>
-      <p class="text-xs text-center text-slate-500 mt-2">Take it from the same spot. AI compares it to the before photos.</p>`;
+      <p class="text-xs text-center text-slate-500 mt-2">Clean the spot, then take the photo from the same place. AI compares it with the original report.</p>`;
   } else if (s.status === 'claimed') {
     action = `<div class="mt-5 rounded-2xl bg-amber-50 p-4 text-sm text-amber-800 font-semibold">⏳ ${esc(s.claimed_by)} is cleaning this spot.</div>`;
   } else {
-    action = `<button onclick="claim('${s.id}')" class="mt-5 w-full rounded-2xl bg-forest-500 text-white font-extrabold py-4 text-lg shadow-lg active:scale-[.98] transition">I'll clean it · +${s.points} pts</button>`;
+    action = `<button onclick="claim('${s.id}')" class="mt-5 w-full rounded-2xl bg-forest-500 text-white font-extrabold py-4 text-lg shadow-lg active:scale-[.98] transition">Claim &amp; clean · +${s.points} pts</button>`;
   }
 
   openSheet(`
     <div class="mx-auto w-10 h-1.5 rounded-full bg-slate-200 mb-4"></div>
+    <div class="text-[11px] font-bold uppercase tracking-wide text-slate-500 mb-2">Original report · before cleanup</div>
     <div class="flex gap-2 overflow-x-auto no-scrollbar -mx-5 px-5">${photos}</div>
     <div class="flex items-start justify-between mt-4">
       <div>
