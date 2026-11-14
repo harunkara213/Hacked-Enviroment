@@ -91,6 +91,7 @@ Data (spots, points, photos) lives in a free Render **Postgres** database that t
 ## What's next
 
 - Donations unlocked only for trusted, verified volunteers
-- Businesses and cities sponsoring point bounties on areas
+- Paying for itself: local sponsors on spot cards, businesses and cities funding point bounties, and small ads.
+  AI costs about $0.002 per photo (Gemini 2.5 Flash, thinking off), about $0.005 per report-and-clean cycle.
 - Group cleanup events and team leaderboards
 - Native app wrapper (Capacitor) with push notifications for nearby spots
