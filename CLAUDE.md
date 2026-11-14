@@ -38,7 +38,10 @@ Live: https://hacker-environment.onrender.com. **Every push to `main` deploys to
   points are taken back and it's a strike.
 - Verified volunteers can set one donation goal ("I'll remove X kg if I get $Y", $5-50, 10-1000 kg);
   progress = donations and ~5 kg per bag cleaned since the goal was set (`goal_of`).
-- Every after/check photo must be within 250 m (GPS). A before photo is required to start a cleanup.
+- Every before/after/check photo must be at the spot: `MAX_CLEAN_DISTANCE_M` (default 400 m), minus the phone's
+  reported accuracy (capped at `MAX_ACTION_LOCATION_ACCURACY_M`) as a margin, since indoor Wi-Fi GPS is often
+  hundreds of metres off. A "too far" 403 carries `too_far: true`; the app keeps the photo and offers a retry.
+  A before photo is required to start a cleanup.
   GPS must also be precise enough: `MAX_ACTION_LOCATION_ACCURACY_M` (Render env, default 75 m) is the one
   setting for this; the app reads it from `/api/status`. Raise it if GPS is weak indoors at a demo.
 - Cleaning your own report or "I'll clean it myself" = solo cleanup: half points, report bonus
@@ -47,9 +50,8 @@ Live: https://hacker-environment.onrender.com. **Every push to `main` deploys to
   no "report user" button, never shown in the app or API (`public_donation_status` strips them), filed only
   through `/api/users/{name}/complain` by the team. Publicly, only "💛 Verified · donations on" is shown;
   nobody else's donation status (locked or not) is visible to other users. Donations: $1-20, $50/month cap, 7-day hold, go to a person, not a cleanup.
-- **Photo authenticity checks are built but switched OFF** (they flagged real iPhone photos; we turn them
-  back on one at a time). App side: `PHOTO_CHECKS` in `static/app.js` (`maxAge`, `noScreenshots`,
-  `aiMetadata`). Server side: `CHECK_REUSED_PHOTOS=1` env. When on: the app rejects photos older than
+- **Photo authenticity checks:** `maxAge` and `noScreenshots` are ON, `aiMetadata` is OFF (it flagged real
+  iPhone photos), in `PHOTO_CHECKS` in `static/app.js`. Server side: `CHECK_REUSED_PHOTOS` (default 1 = ON). The app rejects photos older than
   10 minutes, PNG screenshots and files whose metadata says AI-generated/AI-edited (IPTC/C2PA digital source type
   "trainedAlgorithmicMedia", case-insensitive) or edited (Photoshop...). A C2PA label by itself is
   NOT a reason to reject: Pixel/Galaxy/iPhone cameras add it to normal photos. The server rejects

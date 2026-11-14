@@ -31,7 +31,7 @@ async function api(path, opts = {}) {
   if (!res.ok) {
     const detail = body && body.detail;
     const e = new Error(typeof detail === 'string' ? detail : (detail && detail.message) || `Something went wrong (${res.status})`);
-    if (detail && typeof detail === 'object') e.assessment = detail.analysis;
+    if (detail && typeof detail === 'object') { e.assessment = detail.analysis; e.detail = detail; }
     throw e;
   }
   return body;
@@ -307,10 +307,10 @@ async function checkPhotoOrigin(file) {
   try { await checkPhotoOriginInner(file); } catch (e) { reportRejection(e.message, file); throw e; }
 }
 
-// Each photo check can be switched back on separately. All OFF for now (turn on one by one).
+// Each photo check has its own switch.
 const PHOTO_CHECKS = {
-  maxAge: false,       // refuse photos older than 10 minutes
-  noScreenshots: false, // refuse PNG files
+  maxAge: true,        // refuse photos older than 10 minutes
+  noScreenshots: true,  // refuse PNG files
   aiMetadata: false,    // refuse files tagged as AI-generated/AI-edited or saved by editing apps
 };
 
@@ -776,25 +776,63 @@ async function sendPhoto(url, input, fields, loadingText) {
   if (!file) return null;
   let blob;
   try { blob = await compress(file); } catch (e) { toast(e.message, 'err'); return null; }
+  const r = await postPhotoAtSpot(url, blob, fields, loadingText);
+  if (r) { await loadSpots(); refreshPoints(); }
+  return r;
+}
+
+// Get GPS, post the photo, and if the server says "too far" (indoor GPS is often off by
+// hundreds of metres) offer to retry with a fresh, longer GPS reading. The photo is kept.
+async function postPhotoAtSpot(url, blob, fields, loadingText) {
   const img = URL.createObjectURL(blob);
-  showLoading('Getting a precise GPS fix…', img);
-  const pos = await getLocationOrAsk(img, true);
-  if (!pos) { hideLoading(); return null; }
-  showLoading(loadingText, img);
-  const fd = new FormData();
-  fd.append('user', me);
-  fd.append('lat', pos.lat);
-  fd.append('lng', pos.lng);
-  fd.append('accuracy_m', pos.acc);
-  for (const [k, v] of Object.entries(fields)) fd.append(k, v);
-  fd.append('photo', blob, 'photo.jpg');
-  try {
-    const r = await api(url, { method: 'POST', body: fd });
-    hideLoading();
-    await loadSpots();
-    refreshPoints();
-    return r;
-  } catch (e) { hideLoading(); toast(e.message, 'err'); return null; }
+  let longerWait = false;
+  for (;;) {
+    showLoading('Getting a precise GPS fix…', img);
+    let pos;
+    if (longerWait) {
+      try { pos = await getLocation({ maxWaitMs: 20000, maxAccuracyM: PHOTO_LOCATION_ACCURACY_M }); }
+      catch { pos = await getLocationOrAsk(img, true); }
+    } else {
+      pos = await getLocationOrAsk(img, true);
+    }
+    if (!pos) { hideLoading(); return null; }
+    showLoading(loadingText, img);
+    const fd = new FormData();
+    fd.append('user', me);
+    fd.append('lat', pos.lat);
+    fd.append('lng', pos.lng);
+    fd.append('accuracy_m', pos.acc);
+    for (const [k, v] of Object.entries(fields)) fd.append(k, v);
+    fd.append('photo', blob, 'photo.jpg');
+    try {
+      const r = await api(url, { method: 'POST', body: fd });
+      hideLoading();
+      return r;
+    } catch (e) {
+      hideLoading();
+      if (!(e.detail && e.detail.too_far)) { toast(e.message, 'err'); return null; }
+      if (!(await askTooFar(e.detail))) return null;
+      longerWait = true;
+    }
+  }
+}
+
+function askTooFar(d) {
+  const ios = /iPhone|iPad|iPod/.test(navigator.userAgent);
+  showLocModal({
+    title: 'Not at the spot yet?', primary: 'Try again', secondary: 'Cancel',
+    msg: `GPS puts you about <b>${d.distance_m} m</b> from the spot. Inside buildings GPS is often off by a few hundred metres. Your photo is saved.`,
+    steps: [
+      'Step outside or stand next to a window',
+      ios ? 'Check <b>Settings → Privacy &amp; Security → Location Services → Safari Websites → Precise Location</b> is on'
+          : 'Check the phone\'s <b>Location</b> is on and set to precise / high accuracy',
+      'Wait a few seconds, then tap <b>Try again</b>',
+    ],
+  });
+  return new Promise((resolve) => {
+    $('locRetry').onclick = () => { hideLocModal(); resolve(true); };
+    $('locCancel').onclick = () => { hideLocModal(); resolve(false); };
+  });
 }
 
 async function submitFlag(id, input) {
@@ -859,16 +897,9 @@ async function startTask(id, input) {
   if (!file) return;
   let blob;
   try { blob = await compress(file); } catch (e) { return toast(e.message, 'err'); }
-  const img = URL.createObjectURL(blob);
-  showLoading('Getting a precise GPS fix…', img);
-  const pos = await getLocationOrAsk(img, true);
-  hideLoading();
-  if (!pos) return;
-  const fd = new FormData(); fd.append('user', me); fd.append('lat', pos.lat); fd.append('lng', pos.lng); fd.append('accuracy_m', pos.acc); fd.append('photo', blob, 'before.jpg');
-  try {
-    await api(`/api/spots/${id}/start`, { method: 'POST', body: fd });
-    toast('Before photo saved. Cleanup started!'); await loadSpots(); openSpot(id);
-  } catch (e) { toast(e.message, 'err'); }
+  const r = await postPhotoAtSpot(`/api/spots/${id}/start`, blob, {}, 'Saving your before photo…');
+  if (!r) return;
+  toast('Before photo saved. Cleanup started!'); await loadSpots(); openSpot(id);
 }
 
 async function submitClean(id, input) {

@@ -32,12 +32,14 @@ BASE = Path(__file__).parent
 MAX_PHOTOS = 4
 MAX_PHOTO_BYTES = 8 * 1024 * 1024
 DAILY_POINT_CAP = int(os.getenv("DAILY_POINT_CAP", "1000"))
-MAX_CLEAN_DISTANCE_M = float(os.getenv("MAX_CLEAN_DISTANCE_M", "250"))
+# How close you must be to the spot. Indoors, phones fall back to Wi-Fi positioning that can be off by
+# a few hundred metres, so this is generous, and the GPS margin of error counts in your favour.
+MAX_CLEAN_DISTANCE_M = float(os.getenv("MAX_CLEAN_DISTANCE_M", "400"))
 MAX_ACTION_LOCATION_ACCURACY_M = float(os.getenv("MAX_ACTION_LOCATION_ACCURACY_M", "75"))
 MIN_PERCENT_CLEANED = 60
-# Refuse photos that were already uploaded (perceptual fingerprint). OFF for now; set
-# CHECK_REUSED_PHOTOS=1 on Render to switch it back on. Fingerprints are still stored either way.
-CHECK_REUSED_PHOTOS = os.getenv("CHECK_REUSED_PHOTOS") == "1"
+# Refuse photos that were already uploaded (perceptual fingerprint). ON by default; set
+# CHECK_REUSED_PHOTOS=0 on Render to switch it off. Fingerprints are stored either way.
+CHECK_REUSED_PHOTOS = os.getenv("CHECK_REUSED_PHOTOS", "1") == "1"
 ALLOWED_MIME = {"image/jpeg", "image/png", "image/webp"}
 
 FLAG_REWARD = 10
@@ -189,8 +191,10 @@ def validate_location_accuracy(accuracy_m):
 def require_on_site(spot, lat, lng, what="photo", accuracy_m=None):
     validate_location_accuracy(accuracy_m)
     dist = distance_m(lat, lng, spot["lat"], spot["lng"])
-    if dist + (accuracy_m or 0) > MAX_CLEAN_DISTANCE_M:
-        raise HTTPException(403, f"GPS puts you about {int(dist)} m away (±{int(accuracy_m or 0)} m). Get closer to the spot and take the {what} again.")
+    margin = min(accuracy_m or 0, MAX_ACTION_LOCATION_ACCURACY_M)  # benefit of the doubt
+    if dist - margin > MAX_CLEAN_DISTANCE_M:
+        raise HTTPException(403, {"message": f"GPS puts you about {int(dist)} m from the spot. Get closer and take the {what} again.",
+                                  "too_far": True, "distance_m": int(dist), "accuracy_m": int(accuracy_m or 0)})
 
 
 async def read_photo(f: UploadFile) -> tuple[bytes, str]:

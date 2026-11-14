@@ -139,9 +139,8 @@ pts = points("v2")
 post(f"/api/spots/{s3['id']}/flag", files=img(), user="rep2")
 ok(points("v2") == pts - FULL and c.get("/api/users/v2").json()["strikes"] == 1, "3rd flag: points taken back + strike")
 
-print("== reused photos (switch is off by default; tested switched on)")
-ok(A.CHECK_REUSED_PHOTOS is False, "reused-photo check is off by default")
-A.CHECK_REUSED_PHOTOS = True
+print("== reused photos")
+ok(A.CHECK_REUSED_PHOTOS is True, "reused-photo check is on by default")
 same = new_photo()
 s = report("rep1").json()["spot"]["id"]
 c.post(f"/api/spots/{s}/claim", data={"user": "bob"})
@@ -154,7 +153,8 @@ ok(post("/api/spots", files=[("photos", ("p.jpg", same, "image/jpeg"))], user="v
    "a photo already used can't start a new report")
 A.CHECK_REUSED_PHOTOS = False
 ok(post("/api/spots", files=[("photos", ("p.jpg", same, "image/jpeg"))], user="v1").status_code == 200,
-   "with the check off, a reused photo is accepted")
+   "with the check switched off, a reused photo is accepted")
+A.CHECK_REUSED_PHOTOS = True
 
 print("== donations")
 ok(c.post("/api/users/bob/donate", data={"user": "donor", "amount": 5}).status_code == 403, "donating to non-eligible is refused")
@@ -299,6 +299,20 @@ ok(lb2["Marcus"]["goal"]["promise_kg"] == 80 and lb2["Jin"]["goal"] is None, "Ra
 print("== AI check endpoint")
 r1 = c.get("/api/ai-check").json(); r2 = c.get("/api/ai-check").json()
 ok("model_used" in r1 and r1["cached"] is False and r2["cached"] is True, "AI check reports the model and is cached")
+
+print("== distance tolerance (indoor GPS)")
+gd = report("rep1").json()["spot"]["id"]
+c.post(f"/api/spots/{gd}/claim", data={"user": "bob"})
+near = {"lat": "53.5263", "lng": "-113.5263", "accuracy_m": "10"}     # ~345 m away
+r = c.post(f"/api/spots/{gd}/start", data={"user": "bob", **near}, files=img())
+ok(r.status_code == 200, "~345 m away (indoor GPS drift) is still accepted")
+gd2 = report("rep1").json()["spot"]["id"]
+c.post(f"/api/spots/{gd2}/claim", data={"user": "bob"})
+r = c.post(f"/api/spots/{gd2}/start", data={"user": "bob", "lat": "53.5272", "lng": "-113.5263", "accuracy_m": "60"}, files=img())
+ok(r.status_code == 200, "~445 m away with ±60 m GPS: margin of error counts in your favour")
+r = c.post(f"/api/spots/{gd2}/start", data={"user": "bob", "lat": "53.5300", "lng": "-113.5263", "accuracy_m": "20"}, files=img())
+ok(r.status_code == 403 and r.json()["detail"]["too_far"] and r.json()["detail"]["distance_m"] > 700,
+   "~750 m away is refused with a 'too far' answer the app can retry")
 
 print(f"\n{'ALL PASSED' if not FAILED else f'{len(FAILED)} FAILED'}")
 sys.exit(1 if FAILED else 0)

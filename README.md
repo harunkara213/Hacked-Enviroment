@@ -18,17 +18,17 @@ Built at HackED Beta 2026.
 
 ### Anti-cheat
 - You can clean a spot you reported, but it counts as a solo cleanup (half points, report bonus taken back, max 3 a day, 60 s minimum).
-- Every after photo and check photo must be taken within 250 m of the spot.
-- A task before photo is required within 250 m before cleaning can start.
+- Every before, after and check photo must be taken at the spot: within 400 m by GPS, with the phone's reported
+  accuracy counted in the user's favour (indoor Wi-Fi positioning is often hundreds of metres off). If it's too far,
+  the app keeps the photo and offers "Try again" with tips (step outside, turn on Precise Location).
 - AI must confirm it's the same place and at least 60% cleaned before any points are paid.
 - Anyone passing by can flag a cleaned spot as still dirty and it goes back on the map. Some places get dirty
   again fast, so a cleaner's first 2 flags cost nothing; from the 3rd on, the points are taken back and it's a strike.
 - Points are capped per user per day.
-- **Photo authenticity checks (built, currently switched off while we tune them; re-enabled one by one):**
-  - nothing older than 10 minutes and no screenshots;
-  - files whose metadata marks them as AI-generated or AI-edited (the IPTC / C2PA "digital source type") or
-    saved by editing apps;
-  - a perceptual fingerprint that refuses photos already uploaded (even re-saved or resized).
+- **Photo authenticity checks:**
+  - ON: nothing older than 10 minutes and no screenshots (PNG);
+  - ON: a perceptual fingerprint that refuses photos already uploaded (even re-saved or resized);
+  - OFF for now: files whose metadata marks them as AI-generated or AI-edited (IPTC / C2PA "digital source type").
   Switches: `PHOTO_CHECKS` in `static/app.js`, `CHECK_REUSED_PHOTOS=1` on the server.
 
 ### Photo authenticity: what's next when we grow
