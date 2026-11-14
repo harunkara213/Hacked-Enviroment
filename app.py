@@ -403,7 +403,9 @@ async def report_spot(
     if result.get("looks_fake"):
         strike_fake(user, None)
     if not result["is_litter"]:
-        raise HTTPException(422, "The AI couldn't find litter in these photos. Try a clearer shot of the trash.")
+        if result.get("litter_confidence", 100) < 70:
+            raise HTTPException(422, "I couldn't tell clearly from these photos. Move closer, use good lighting, and include the litter in focus.")
+        raise HTTPException(422, "I couldn't confirm discarded litter in these photos. Try another angle that clearly shows the trash.")
 
     spot_id = uuid.uuid4().hex[:10]
     names = [save_photo(d, m) for d, m in images]

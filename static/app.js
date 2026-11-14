@@ -223,8 +223,8 @@ function fmtDist(d) {
   return myLocation.acc > 100 ? `${txt} (weak GPS ±${myLocation.acc} m)` : txt;
 }
 
-// Shrink photos before upload: faster on venue Wi-Fi and cheaper for the AI.
-function compress(file, max = 1280, quality = 0.82) {
+// Keep enough detail to recognize small or distant litter without uploading full camera originals.
+function compress(file, max = 1920, quality = 0.9) {
   return new Promise((resolve, reject) => {
     const url = URL.createObjectURL(file);
     const img = new Image();

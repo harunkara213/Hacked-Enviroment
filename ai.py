@@ -8,7 +8,7 @@ import os
 
 from pydantic import BaseModel, Field
 
-MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+MODEL = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
 
 _client = None
 LAST_ERROR = None  # exposed by /api/status so setup and API failures are visible
@@ -38,7 +38,8 @@ def _get_client():
 # ---------- schemas ----------
 
 class Assessment(BaseModel):
-    is_litter: bool = Field(description="True if the photos show litter/trash that a volunteer could clean up")
+    is_litter: bool = Field(description="True if any photo visibly shows discarded human-made waste outdoors or in a public place")
+    litter_confidence: int = Field(description="0-100 confidence in the litter decision; use a low score when the photo is too distant, dark, blurry, or obstructed to tell")
     difficulty: int = Field(description="Cleanup difficulty from 1 (a few items) to 5 (large dump, hazards, heavy items)")
     estimated_bags: int = Field(description="Estimated number of standard 50L garbage bags needed")
     estimated_minutes: int = Field(description="Estimated minutes for one person to clean it")
@@ -58,11 +59,13 @@ FAKE_RULE = """Also check for cheating: set looks_fake=true only if a photo is c
 (moire, pixels, bezels), a screenshot, a stock/web image (watermark, studio look) or AI-generated/edited.
 Normal phone photos, even blurry or dark ones, are NOT fake."""
 
-ASSESS_PROMPT = """You are the scoring engine for a community cleanup app.
-Volunteers earn points for cleaning the spot in these photos.
-Look at all photos (they may show the same spot from different angles) and assess the litter.
-If the photos do not show litter (e.g. a selfie, a clean room, a random object), set is_litter=false.
-Be realistic: a few cans = difficulty 1, a picnic mess = 2-3, an illegal dump or hazardous items = 4-5.
+ASSESS_PROMPT = """You assess reports for a community litter cleanup app. Examine every image carefully, including the ground, edges, gutters, bushes, and background. The images may show the same spot from different angles; evidence in any one image counts.
+
+Count discarded human-made waste that a volunteer could pick up: bottles, cans, cups, wrappers, food packaging, paper, cardboard, bags, cigarette butts, broken household items, and dumped rubbish. A single recognizable discarded item is enough. Litter can be small, partly hidden, or far from the camera; do not require a large pile. In a public or outdoor place, treat an ambiguous man-made item as litter when it appears abandoned rather than in use.
+
+Set is_litter=false only when you are confident that none of the photos shows discarded human-made waste. Do not mistake leaves, rocks, shadows, stains, or ordinary dirt for litter. If the image is too dark, blurry, distant, or obstructed to decide, set litter_confidence low and explain what detail is unclear in the summary; do not claim the place is clean.
+
+For a confirmed report, give a short summary naming the visible waste. Be realistic about effort: one or two small items = difficulty 1, a scattered handful = 2, a larger area or several bags = 3, a substantial dump = 4-5. Estimate bags, minutes, and hazards from what is visible, not from the photo quality.
 """ + FAKE_RULE
 
 VERIFY_PROMPT = """You are verifying a volunteer cleanup for a community cleanup app.
@@ -119,6 +122,7 @@ def assess_spot(images: list[tuple[bytes, str]]) -> dict:
             LAST_ERROR = None
             a.difficulty = max(1, min(5, a.difficulty))
             a.estimated_bags = max(0, a.estimated_bags)
+            a.litter_confidence = max(0, min(100, a.litter_confidence))
             return {**a.model_dump(), "points": points_for(a.difficulty, a.estimated_bags), "source": "gemini"}
         except Exception as e:  # network, quota, billing... keep the demo alive
             LAST_ERROR = repr(e)[:300]
@@ -128,6 +132,7 @@ def assess_spot(images: list[tuple[bytes, str]]) -> dict:
     bags = difficulty + s % 3
     return {
         "is_litter": True,
+        "litter_confidence": 0,
         "difficulty": difficulty,
         "estimated_bags": bags,
         "estimated_minutes": 10 * difficulty + 5 * bags,
