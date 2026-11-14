@@ -451,6 +451,52 @@ function donationCard(d, mine) {
   </div>`;
 }
 
+// ---------- donation goals ("I'll remove X kg of trash if I get $Y") ----------
+function bar(pct, cls) {
+  return `<div class="h-2 rounded-full bg-black/10 overflow-hidden"><div class="h-full rounded-full ${cls}" style="width:${Math.min(100, Math.round(pct))}%"></div></div>`;
+}
+
+function goalCard(g, name, mine) {
+  if (!g) return '';
+  const money_pct = g.target_cents ? (g.raised_cents / g.target_cents) * 100 : 0;
+  const kg_pct = g.promise_kg ? (g.kg_done / g.promise_kg) * 100 : 0;
+  return `<div class="rounded-2xl bg-forest-50 p-4">
+    <div class="font-extrabold text-forest-900">🎯 ${mine ? 'My promise' : `${esc(name)}'s promise`}</div>
+    <div class="text-sm text-forest-900/80 mt-0.5">"I'll remove <b>${g.promise_kg} kg</b> of trash if I get <b>${money(g.target_cents)}</b> in donations."</div>
+    <div class="mt-3 text-xs font-bold text-slate-600 flex justify-between"><span>💛 Donations</span><span>${money(g.raised_cents)} / ${money(g.target_cents)}</span></div>
+    ${bar(money_pct, 'bg-amber-400')}
+    <div class="mt-2 text-xs font-bold text-slate-600 flex justify-between"><span>🗑️ Trash removed</span><span>~${g.kg_done} / ${g.promise_kg} kg</span></div>
+    ${bar(kg_pct, 'bg-forest-500')}
+    <div class="text-[11px] text-slate-500 mt-2">Counted since the promise was made. ~5 kg per full bag.</div>
+  </div>`;
+}
+
+function goalForm(g) {
+  return `<details class="mt-3 rounded-2xl bg-white p-4 shadow-sm" ${g ? '' : 'open'}>
+    <summary class="font-extrabold text-slate-800 cursor-pointer">🎯 ${g ? 'Change my promise' : 'Make a promise to donors'}</summary>
+    <div class="text-xs text-slate-500 mt-1">Tell people what their donations will get done.</div>
+    <div class="grid grid-cols-2 gap-2 mt-3 text-sm">
+      <label class="block"><span class="text-xs font-bold text-slate-500">I'll remove (kg)</span>
+        <input id="goalKg" type="number" min="10" max="1000" value="${g ? g.promise_kg : 100}" class="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 font-bold"></label>
+      <label class="block"><span class="text-xs font-bold text-slate-500">If I get ($)</span>
+        <input id="goalUsd" type="number" min="5" max="50" value="${g ? g.target_cents / 100 : 50}" class="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 font-bold"></label>
+    </div>
+    <button onclick="saveGoal()" class="mt-3 w-full rounded-2xl bg-forest-500 text-white font-extrabold py-3 active:scale-[.98] transition">Save promise</button>
+  </details>`;
+}
+
+async function saveGoal() {
+  const fd = new FormData();
+  fd.append('user', me);
+  fd.append('promise_kg', Math.round(Number($('goalKg').value)));
+  fd.append('target_dollars', Math.round(Number($('goalUsd').value)));
+  try {
+    await api(`/api/users/${encodeURIComponent(me)}/goal`, { method: 'POST', body: fd });
+    toast('🎯 Promise saved. Donors can see it on your profile.');
+    loadMe();
+  } catch (e) { toast(e.message, 'err'); }
+}
+
 async function openUser(name) {
   let p;
   try { p = await api('/api/users/' + encodeURIComponent(name)); } catch (e) { return toast(e.message, 'err'); }
@@ -477,6 +523,7 @@ async function openUser(name) {
       <div class="bg-slate-50 rounded-2xl py-2"><div class="text-lg font-extrabold">${p.bags}</div><div class="text-[11px] text-slate-500">bags</div></div>
     </div>
     <div class="mt-4">${donationCard(d, isMe)}</div>
+    ${p.goal ? `<div class="mt-3">${goalCard(p.goal, name, isMe)}</div>` : ''}
     ${donate}`);
 }
 
@@ -922,6 +969,7 @@ async function loadLeaders() {
       <div class="flex-1 min-w-0">
         <div class="font-bold truncate">${esc(r.user)}${r.user === me ? ' (you)' : ''}</div>
         <div class="text-xs text-slate-500 mt-0.5">${esc(r.level)} · ${r.cleanups} cleanup${r.cleanups === 1 ? '' : 's'}${badge(r)}</div>
+        ${r.goal ? `<div class="text-xs text-forest-700 font-semibold mt-1">🎯 ${r.goal.promise_kg} kg for ${money(r.goal.target_cents)} · ${money(r.goal.raised_cents)} raised</div>` : ''}
       </div>
       <div class="font-extrabold text-forest-700">${r.points}</div>
     </li>`).join('')
@@ -948,7 +996,9 @@ async function loadMe() {
   $('meTrust').innerHTML = [
     p.trusted ? '🛡️ Trusted volunteer' : p.strikes ? `⚠️ ${p.strikes} "still dirty" flag${p.strikes > 1 ? 's' : ''}` : '🌱 Building trust',
   ].filter(Boolean).map((t) => `<span class="bg-white/15 rounded-full px-3 py-1">${t}</span>`).join('');
-  $('meDonations').innerHTML = donationCard(p.donations, true);
+  $('meDonations').innerHTML = donationCard(p.donations, true)
+    + (p.goal ? `<div class="mt-3">${goalCard(p.goal, p.user, true)}</div>` : '')
+    + (p.donations.eligible ? goalForm(p.goal) : '');
 
   const mine = spots.filter((s) => s.reporter === me || s.cleaner === me || s.claimed_by === me);
   $('myActivity').innerHTML = mine.length ? mine.map((s) => {

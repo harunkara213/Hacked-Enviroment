@@ -38,6 +38,14 @@ MIN_PERCENT_CLEANED = 60
 ALLOWED_MIME = {"image/jpeg", "image/png", "image/webp"}
 
 FLAG_REWARD = 10
+# Some places get dirty again fast, so a cleaner's first FREE_FLAGS "still dirty" flags only reopen
+# the spot. From the next one on, the points are taken back and it's a strike (locks donations).
+FREE_FLAGS = 2
+
+# Donation goals: a verified volunteer promises "I'll remove X kg of trash if I get $Y".
+KG_PER_BAG = 5                     # rough weight of one full 50 L bag of litter
+GOAL_KG_RANGE = (10, 1000)
+GOAL_DOLLARS_RANGE = (5, 50)       # never more than the $50/month donation cap
 
 # Donations: only for proven, clean-record volunteers. Any strike or 2+ complaints = locked for good.
 # DONATION_DEMO=1 lowers the bar so the flow can be shown at a hackathon.
@@ -120,6 +128,9 @@ def init_db():
         );
         CREATE TABLE IF NOT EXISTS photos (
             name TEXT PRIMARY KEY, mime TEXT NOT NULL, data BLOB NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS goals (
+            user TEXT PRIMARY KEY, promise_kg INTEGER NOT NULL, target_cents INTEGER NOT NULL, created_at REAL NOT NULL
         );
         CREATE TABLE IF NOT EXISTS client_rejects (
             ts REAL NOT NULL, user TEXT, reason TEXT, detail TEXT, agent TEXT
@@ -302,7 +313,7 @@ def donation_status(c, user) -> dict:
          "need": DON_MIN_REPORTERS, "ok": v["reporters"] >= DON_MIN_REPORTERS},
         {"label": f"Member for {DON_MIN_DAYS}+ days", "have": int(days), "need": DON_MIN_DAYS,
          "ok": days >= DON_MIN_DAYS},
-        {"label": "No \"still dirty\" flags, ever", "have": t["strikes"], "need": 0,
+        {"label": f"No more than {FREE_FLAGS} \"still dirty\" flags", "have": t["strikes"], "need": 0,
          "ok": t["strikes"] == 0, "permanent": True},
         # Internal rule: enforced, but never shown to users (complaints are handled internally).
         {"label": "No complaints", "have": complaints, "need": 0,
@@ -321,6 +332,19 @@ def public_donation_status(don, sums) -> dict:
     out.update(held_cents=sums.get("held", 0), released_cents=sums.get("released", 0),
                refunded_cents=sums.get("refunded", 0), monthly_cap_cents=DON_MONTHLY_CAP_CENTS)
     return out
+
+
+def goal_of(c, user):
+    """The volunteer's promise and how far along it is (money raised and kg cleaned since it was set)."""
+    g = c.execute("SELECT * FROM goals WHERE user=?", (user,)).fetchone()
+    if not g:
+        return None
+    raised = c.execute("""SELECT COALESCE(SUM(amount_cents),0) FROM donations
+                          WHERE cleaner=? AND status!='refunded' AND ts>=?""", (user, g["created_at"])).fetchone()[0]
+    bags = c.execute("""SELECT COALESCE(SUM(bags),0) FROM spots
+                        WHERE cleaner=? AND status='cleaned' AND cleaned_at>=?""", (user, g["created_at"])).fetchone()[0]
+    return {"promise_kg": g["promise_kg"], "target_cents": g["target_cents"], "raised_cents": raised,
+            "kg_done": bags * KG_PER_BAG, "since": g["created_at"]}
 
 
 def settle_donations(c, user):
@@ -457,6 +481,16 @@ def seed_demo():
                        ai.points_for(d["difficulty"], d["bags"]), "demo-seed",
                        time.time() - d["hours_ago"] * 3600))
     seed_demo_people()
+    seed_demo_goals()
+
+
+def seed_demo_goals():
+    """Example donation goals for two verified demo volunteers (added once)."""
+    with closing(db()) as c, c:
+        for name, kg, cents, days_ago in (("Sofia", 100, 5000, 5), ("Aylin", 60, 3000, 4)):
+            if c.execute("SELECT 1 FROM events WHERE user=? LIMIT 1", (name,)).fetchone():
+                c.execute("INSERT INTO goals VALUES (?,?,?,?) ON CONFLICT DO NOTHING",
+                          (name, kg, cents, time.time() - days_ago * 86400))
 
 
 # Demo volunteers with a past history, so Ranks shows who can receive donations and who can't.
@@ -810,7 +844,8 @@ async def flag_spot(
     accuracy_m: float | None = Form(None),
     photo: UploadFile = File(...),
 ):
-    """Anyone passing by can report a 'cleaned' spot as still dirty. Points are taken back."""
+    """Anyone passing by can report a 'cleaned' spot as still dirty. The spot reopens; after the
+    cleaner's first FREE_FLAGS flags, the points are also taken back and it counts as a strike."""
     user = clean_name(user)
     with closing(db()) as c:
         s = get_spot(c, spot_id)
@@ -829,17 +864,21 @@ async def flag_spot(
     with closing(db()) as c, c:
         seen(c, user, lat, lng)
         name = save_photo(*img, c=c)
-        if s["awarded"]:
-            award(c, s["cleaner"], -s["awarded"], "revoke", spot_id)
+        earlier = c.execute("""SELECT COUNT(*) FROM events WHERE user=? AND kind IN ('revoke','flag_free')""",
+                            (s["cleaner"],)).fetchone()[0]
+        if earlier < FREE_FLAGS:
+            award(c, s["cleaner"], 0, "flag_free", spot_id)  # places re-dirty: no penalty yet
+            note = f"{user} flagged it as still dirty. Back on the map."
         else:
-            award(c, s["cleaner"], 0, "revoke", spot_id)
+            award(c, s["cleaner"], -(s["awarded"] or 0), "revoke", spot_id)
+            note = f"{user} flagged it as still dirty. Points were taken back."
         reward = award(c, user, FLAG_REWARD, "flag", spot_id)
         photos = json.loads(s["photos"]) + [name]
         c.execute("""UPDATE spots SET status='open', photos=?, claimed_by=NULL, claimed_at=NULL, cleaner=NULL,
                      after_photo=NULL, pending_points=NULL, awarded=NULL, verifier=NULL,
                      verifier_assigned_at=NULL, excluded=NULL, verified_by=NULL, verified_at=NULL,
                      verify_photo=NULL, self_clean=0, verify_note=? WHERE id=?""",
-                  (json.dumps(photos), f"{user} flagged it as still dirty. Points were taken back.", spot_id))
+                  (json.dumps(photos), note, spot_id))
         row = get_spot(c, spot_id)
     return {"spot": spot_out(row), "reward": reward}
 
@@ -862,6 +901,29 @@ def complain(name: str, user: str = Form(...), reason: str = Form(...), spot_id:
             raise HTTPException(409, f"You already reported {name}.")
         settle_donations(c, name)
     return {"ok": True}
+
+
+@app.post("/api/users/{name}/goal")
+def set_goal(name: str, user: str = Form(...), promise_kg: int = Form(...), target_dollars: int = Form(...)):
+    """A verified volunteer promises: "I'll remove promise_kg of trash if I get $target_dollars"."""
+    name, user = clean_name(name), clean_name(user)
+    if name != user:
+        raise HTTPException(403, "You can only set your own goal.")
+    lo, hi = GOAL_KG_RANGE
+    if not lo <= promise_kg <= hi:
+        raise HTTPException(400, f"Promise between {lo} and {hi} kg.")
+    lo, hi = GOAL_DOLLARS_RANGE
+    if not lo <= target_dollars <= hi:
+        raise HTTPException(400, f"Ask for ${lo} to ${hi} (the monthly donation limit).")
+    with closing(db()) as c, c:
+        if not donation_status(c, user)["eligible"]:
+            raise HTTPException(403, "Only verified volunteers can set a donation goal.")
+        c.execute("""INSERT INTO goals VALUES (?,?,?,?)
+                     ON CONFLICT(user) DO UPDATE SET promise_kg=excluded.promise_kg,
+                     target_cents=excluded.target_cents, created_at=excluded.created_at""",
+                  (user, promise_kg, target_dollars * 100, time.time()))
+        goal = goal_of(c, user)
+    return {"ok": True, "goal": goal}
 
 
 @app.post("/api/users/{name}/donate")
@@ -896,7 +958,7 @@ def leaderboard():
         for r in rows:
             d = donation_status(c, r["user"])
             out.append({**dict(r), "level": level_for(r["points"])["title"],
-                        "donatable": d["eligible"]})
+                        "donatable": d["eligible"], "goal": goal_of(c, r["user"]) if d["eligible"] else None})
     return out
 
 
@@ -922,9 +984,10 @@ def profile(name: str):
         don = donation_status(c, name)
         sums = dict(c.execute("""SELECT status, SUM(amount_cents) FROM donations WHERE cleaner=?
                                  GROUP BY status""", (name,)).fetchall())
+        goal = goal_of(c, name) if don["eligible"] else None
     users = [x[0] for x in ranked]
     rank = users.index(name) + 1 if name in users else None
     return {"user": name, **dict(r), "bags": bags, "rank": rank, "total_users": len(users),
             "level": level_for(r["points"]), "on_hold": on_hold, "to_verify": to_verify,
             "trusted": trust["trusted"], "strikes": trust["strikes"],
-            "donations": public_donation_status(don, sums)}
+            "donations": public_donation_status(don, sums), "goal": goal}

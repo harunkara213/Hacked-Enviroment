@@ -33,8 +33,11 @@ Live: https://hacker-environment.onrender.com. **Every push to `main` deploys to
 ## Anti-cheat rules: do not weaken these
 - Points are paid when the AI approves the after photo: same place as the before photos and at
   least 60% cleaned (`MIN_PERCENT_CLEANED`). There is no in-person verification step (removed on purpose).
-- A "still dirty" flag (photo at the spot, AI must see litter) reopens the spot, takes the points back
-  and gives the cleaner a strike.
+- A "still dirty" flag (photo at the spot, AI must see litter) reopens the spot. A cleaner's first
+  `FREE_FLAGS` (2) flags cost nothing, since some places get dirty again fast; from the next one on, the
+  points are taken back and it's a strike.
+- Verified volunteers can set one donation goal ("I'll remove X kg if I get $Y", $5-50, 10-1000 kg);
+  progress = donations and ~5 kg per bag cleaned since the goal was set (`goal_of`).
 - Every after/check photo must be within 250 m (GPS). A before photo is required to start a cleanup.
   GPS must also be precise enough: `MAX_ACTION_LOCATION_ACCURACY_M` (Render env, default 75 m) is the one
   setting for this; the app reads it from `/api/status`. Raise it if GPS is weak indoors at a demo.

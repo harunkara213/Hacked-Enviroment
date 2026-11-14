@@ -130,7 +130,14 @@ ok(post(f"/api/spots/{s['id']}/flag", files=img(), user="rep2").status_code == 4
 ai_says.update(outcome="litter_detected")
 r = post(f"/api/spots/{s['id']}/flag", files=img(), user="rep2")
 ok(r.status_code == 200 and r.json()["spot"]["status"] == "open", "flag reopens the spot")
-ok(points("v2") == pts - FULL and c.get("/api/users/v2").json()["strikes"] == 1, "cleaner loses the points and gets a strike")
+ok(points("v2") == pts and c.get("/api/users/v2").json()["strikes"] == 0, "1st flag: places get dirty again, no penalty")
+s2 = full_cleanup("rep1", "v2").json()["spot"]
+post(f"/api/spots/{s2['id']}/flag", files=img(), user="rep2")
+ok(c.get("/api/users/v2").json()["strikes"] == 0, "2nd flag: still no penalty")
+s3 = full_cleanup("rep1", "v2").json()["spot"]
+pts = points("v2")
+post(f"/api/spots/{s3['id']}/flag", files=img(), user="rep2")
+ok(points("v2") == pts - FULL and c.get("/api/users/v2").json()["strikes"] == 1, "3rd flag: points taken back + strike")
 
 print("== reused photos")
 same = new_photo()
@@ -157,7 +164,7 @@ ok(c.post("/api/users/dan/donate", data={"user": "donor", "amount": 20}).status_
 d = c.get("/api/users/dan").json()["donations"]
 ok(d["held_cents"] == 4000 and d["released_cents"] == 0, "donations are held, not released")
 ok(not c.get("/api/users/v2").json()["donations"]["eligible"] and c.get("/api/users/v2").json()["donations"]["locked"],
-   "a 'still dirty' flag locks donations")
+   "a 3rd 'still dirty' flag locks donations")
 
 print("== complaints")
 ok(c.post("/api/users/dan/complain", data={"user": "nobody", "reason": "fake_photos"}).status_code == 403, "brand-new account can't complain")
@@ -267,6 +274,22 @@ ok("complaints" not in pd and not any("omplaint" in r["label"] for r in pd["rule
 ok(not any(s["id"].startswith("demohist-") for s in c.get("/api/spots").json()), "demo people's past cleanups stay off the map")
 A.seed_demo()
 ok(c.get("/api/users/Sofia").json()["cleanups"] == 12, "restart doesn't duplicate demo people")
+
+print("== donation goals")
+sg = c.get("/api/users/Sofia").json()["goal"]
+ok(sg and sg["promise_kg"] == 100 and sg["target_cents"] == 5000 and sg["raised_cents"] == 3500, "Sofia's demo promise: 100 kg for $50, $35 raised")
+ok(c.post("/api/users/Noah/goal", data={"user": "Noah", "promise_kg": 50, "target_dollars": 20}).status_code == 403,
+   "only verified volunteers can make a promise")
+ok(c.post("/api/users/Marcus/goal", data={"user": "Sofia", "promise_kg": 50, "target_dollars": 20}).status_code == 403,
+   "you can't set someone else's promise")
+ok(c.post("/api/users/Marcus/goal", data={"user": "Marcus", "promise_kg": 50, "target_dollars": 80}).status_code == 400,
+   "a promise can't ask for more than the $50 monthly limit")
+r = c.post("/api/users/Marcus/goal", data={"user": "Marcus", "promise_kg": 80, "target_dollars": 40})
+ok(r.status_code == 200 and r.json()["goal"]["raised_cents"] == 0, "Marcus promises 80 kg for $40")
+c.post("/api/users/Marcus/donate", data={"user": "donor", "amount": 15})
+ok(c.get("/api/users/Marcus").json()["goal"]["raised_cents"] == 1500, "donations count toward the promise")
+lb2 = {x["user"]: x for x in c.get("/api/leaderboard").json()}
+ok(lb2["Marcus"]["goal"]["promise_kg"] == 80 and lb2["Jin"]["goal"] is None, "Ranks shows promises only for verified people")
 
 print(f"\n{'ALL PASSED' if not FAILED else f'{len(FAILED)} FAILED'}")
 sys.exit(1 if FAILED else 0)

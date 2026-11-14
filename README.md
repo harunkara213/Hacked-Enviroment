@@ -21,7 +21,8 @@ Built at HackED Beta 2026.
 - Every after photo and check photo must be taken within 250 m of the spot.
 - A task before photo is required within 250 m before cleaning can start.
 - AI must confirm it's the same place and at least 60% cleaned before any points are paid.
-- Anyone passing by can flag a cleaned spot as still dirty: the cleaner loses the points and gets a strike.
+- Anyone passing by can flag a cleaned spot as still dirty and it goes back on the map. Some places get dirty
+  again fast, so a cleaner's first 2 flags cost nothing; from the 3rd on, the points are taken back and it's a strike.
 - Points are capped per user per day.
 - Photos must be taken now with the camera: no gallery uploads, nothing older than 10 minutes, no screenshots,
   and files whose metadata marks them as AI-generated or AI-edited (the IPTC / C2PA "digital source type") or
@@ -54,6 +55,8 @@ People can tip a volunteer, but the rules are built so littering for money never
 - **Locked for good** after any "still dirty" flag, or after complaints reviewed internally by the team (complaints are never shown in the app).
 - Publicly, only **"💛 Verified · donations on"** is shown. Nobody else's donation status is visible to other users.
 - Donations go to the **person, not a specific cleanup**, so there's no per-spot payout to farm.
+- **Promises:** a verified volunteer can say "I'll remove 100 kg of trash if I get $50". Their profile and Ranks
+  show two progress bars: donations raised and kg removed since the promise (~5 kg per bag).
 - **$1–$20 per donation, max $50 per month** per volunteer.
 - Every donation is **held 7 days** and refunded automatically if the volunteer gets locked during that time.
 - Donations are recorded only for now. Real payouts would go through Stripe Connect with the same hold.
