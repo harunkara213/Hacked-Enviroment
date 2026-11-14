@@ -3,7 +3,7 @@ psycopg==3.3.9
 psycopg-binary==3.3.9
 google-genai==3.3.0
 pydantic==2.14.3
-Pillow>=10.0.0
+Pillow==13.0.0
 python-dotenv==1.2.4
 python-multipart==0.0.33
 uvicorn==0.54.0

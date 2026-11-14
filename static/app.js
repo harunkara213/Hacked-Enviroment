@@ -270,8 +270,55 @@ function fmtDist(d) {
   return myLocation.acc > 30 ? `≈${txt} (GPS ±${myLocation.acc} m)` : txt;
 }
 
-// Keep enough detail to recognize small or distant litter without uploading full camera originals.
-function compress(file, max = 1920, quality = 0.9) {
+// ---------- photo origin checks (before compressing, which strips metadata) ----------
+// Not proof on their own (a determined cheater can work around client checks), but they stop
+// the easy routes: old gallery photos, screenshots, and files that carry an AI-generator or
+// editing-app signature. The server adds duplicate detection and the AI fake check, and a
+// random nearby person still has to confirm cleanups in person.
+const MAX_PHOTO_AGE_MS = 10 * 60 * 1000;
+const PROVENANCE_MARKERS = [
+  // C2PA / Content Credentials (used by OpenAI, Google, Adobe, Microsoft for AI images)
+  ['c2pa', 'Content Credentials (AI / edited image)'], ['jumbf', 'Content Credentials (AI / edited image)'],
+  // IPTC "digital source type" written by AI generators
+  ['trainedAlgorithmicMedia', 'AI-generated image tag'], ['compositeSynthetic', 'AI-generated image tag'],
+  ['Midjourney', 'Midjourney'], ['DALL-E', 'DALL-E'], ['Stable Diffusion', 'Stable Diffusion'],
+  ['stable-diffusion', 'Stable Diffusion'], ['NovelAI', 'NovelAI'], ['Firefly', 'Adobe Firefly'],
+  ['SynthID', 'Google SynthID'], ['Imagen', 'Google Imagen'],
+  // editing apps
+  ['Adobe Photoshop', 'Photoshop'], ['Photoshop 3.0', 'Photoshop'], ['GIMP', 'GIMP'], ['Snapseed', 'Snapseed'],
+  ['Lightroom', 'Lightroom'], ['Picsart', 'Picsart'], ['Canva', 'Canva'], ['Facetune', 'Facetune'], ['Meitu', 'Meitu'],
+];
+
+async function checkPhotoOrigin(file) {
+  if (file.lastModified && Date.now() - file.lastModified > MAX_PHOTO_AGE_MS) {
+    throw new Error('This photo is not new. Take a fresh photo with the camera right now.');
+  }
+  if (file.type === 'image/png') {
+    throw new Error("Screenshots aren't accepted. Take a photo with the camera.");
+  }
+  // Metadata lives at the start of the file (EXIF/XMP/C2PA). For JPEGs, only scan up to the
+  // start of the image data (SOS marker FF DA), so random pixel bytes can't cause a false alarm.
+  let head = new Uint8Array(await file.slice(0, 512 * 1024).arrayBuffer());
+  let text;
+  if (head[0] === 0xff && head[1] === 0xd8) {
+    // Walk the JPEG segments (APP1 EXIF/XMP, APP11 C2PA, ...) until the image data starts.
+    let i = 2;
+    while (i + 3 < head.length && head[i] === 0xff && head[i + 1] !== 0xda) {
+      i += 2 + ((head[i + 2] << 8) | head[i + 3]);
+    }
+    text = new TextDecoder('latin1').decode(head.subarray(0, Math.min(i, head.length)));
+  } else {
+    const tail = new Uint8Array(await file.slice(Math.max(0, file.size - 128 * 1024)).arrayBuffer());
+    text = new TextDecoder('latin1').decode(head) + new TextDecoder('latin1').decode(tail);
+  }
+  const hit = PROVENANCE_MARKERS.find(([m]) => text.includes(m));
+  if (hit) throw new Error(`This photo looks edited or AI-made (${hit[1]}). Take a new photo with the camera.`);
+}
+
+// Keep enough detail to recognize small or distant litter, but small enough to upload on venue Wi-Fi
+// and to fit many photos in the free database.
+async function compress(file, max = 1600, quality = 0.85) {
+  await checkPhotoOrigin(file);
   return new Promise((resolve, reject) => {
     const url = URL.createObjectURL(file);
     const img = new Image();
@@ -1012,7 +1059,6 @@ async function shareCard() {
 async function boot() {
   initMap();
   $('photoInput').addEventListener('change', (e) => { addFiles([...e.target.files]); e.target.value = ''; });
-  $('galleryInput').addEventListener('change', (e) => { addFiles([...e.target.files]); e.target.value = ''; });
   renderPending();
   go('map');
   if (!me) askName(); else { refreshPoints(); checkLocationAccess(); }

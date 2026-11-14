@@ -95,10 +95,7 @@ tailwind.config = { theme: { extend: {
         <span class="text-2xl">📷</span> <span id="addPhotoLabel">Take a photo</span>
         <input id="photoInput" type="file" accept="image/*" capture="environment" class="hidden">
       </label>
-      <label class="block text-center text-forest-400 text-xs mt-2 underline cursor-pointer">
-        or choose from gallery
-        <input id="galleryInput" type="file" accept="image/*" multiple class="hidden">
-      </label>
+      <p class="text-center text-forest-100/60 text-xs mt-2">Photos must be taken now with your camera. Gallery, edited and AI-made images aren't accepted.</p>
 
       <div id="locBox" class="mt-5 rounded-2xl bg-white/10 text-forest-50 px-4 py-3 text-sm flex items-center gap-2">
         <span>🛰️</span><span id="locText">Location will be captured when you submit.</span>

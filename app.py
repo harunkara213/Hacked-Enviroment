@@ -24,6 +24,7 @@ from fastapi.staticfiles import StaticFiles  # noqa: E402
 
 import ai  # noqa: E402
 import db as dbmod  # noqa: E402
+import photocheck  # noqa: E402
 
 BASE = Path(__file__).parent
 
@@ -131,6 +132,11 @@ def init_db():
         for col, typ in SPOT_EXTRA_COLUMNS.items():
             if col not in have:
                 c.execute(f"ALTER TABLE spots ADD COLUMN {col} {typ}")
+        if "dhash" not in c.columns("photos"):
+            c.execute("ALTER TABLE photos ADD COLUMN dhash TEXT")
+        # Fingerprint photos uploaded before this check existed.
+        for r in c.execute("SELECT name, data FROM photos WHERE dhash IS NULL").fetchall():
+            c.execute("UPDATE photos SET dhash=? WHERE name=?", (photocheck.dhash(bytes(r["data"])) or "", r["name"]))
 
 
 init_db()
@@ -176,7 +182,20 @@ async def read_photo(f: UploadFile) -> tuple[bytes, str]:
     data = await f.read()
     if not data or len(data) > MAX_PHOTO_BYTES:
         raise HTTPException(400, "Photo is empty or too large (max 8 MB).")
+    reject_if_reused(data)
     return data, mime
+
+
+def reject_if_reused(data: bytes):
+    """Every photo must be new: catches the same shot used as before and after, one photo for
+    several spots, a verifier re-uploading the cleaner's photo, or someone else's upload."""
+    h = photocheck.dhash(data)
+    if not h:
+        return
+    with closing(db()) as c:
+        rows = c.execute("SELECT dhash FROM photos WHERE dhash IS NOT NULL AND dhash != ''").fetchall()
+    if any(photocheck.same_photo(h, r[0]) for r in rows):
+        raise HTTPException(409, "This photo was already uploaded. Take a new photo at the spot.")
 
 
 def save_photo(data: bytes, mime: str, c=None) -> str:
@@ -184,11 +203,12 @@ def save_photo(data: bytes, mime: str, c=None) -> str:
     Pass `c` when already inside a write transaction, so SQLite doesn't lock itself."""
     ext = {"image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp"}[mime]
     name = uuid.uuid4().hex + ext
+    row = (name, mime, data, photocheck.dhash(data) or "")
     if c is not None:
-        c.execute("INSERT INTO photos (name, mime, data) VALUES (?,?,?)", (name, mime, data))
+        c.execute("INSERT INTO photos (name, mime, data, dhash) VALUES (?,?,?,?)", row)
     else:
         with closing(db()) as c2, c2:
-            c2.execute("INSERT INTO photos (name, mime, data) VALUES (?,?,?)", (name, mime, data))
+            c2.execute("INSERT INTO photos (name, mime, data, dhash) VALUES (?,?,?,?)", row)
     return name
 
 

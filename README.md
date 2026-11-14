@@ -29,6 +29,21 @@ Built at HackED Beta 2026.
 - Nobody verifies within 48 h: the cleaner gets half the points from the AI check alone.
 - Points are capped per user per day.
 - AI checks every photo for fakes (photo of a screen, screenshot, stock or AI image). A fake photo is a strike.
+- Photos must be taken now with the camera: no gallery uploads, nothing older than 10 minutes, no screenshots,
+  and files carrying AI or editing metadata (C2PA Content Credentials, IPTC "AI-generated" tags, Photoshop and
+  other editors) are refused.
+- Every photo gets a perceptual fingerprint. A photo that was already uploaded (even re-saved or resized) is
+  refused, which blocks reusing the before photo as the after photo, one photo for several spots, and verifiers
+  re-uploading the cleaner's photo.
+
+### Photo authenticity: what's next when we grow
+No method proves a photo is real with 100% certainty, so the app stacks checks and keeps a human in the loop
+(random in-person verification, "still dirty" flags, complaints). With funding we'd add:
+- An in-app camera with signed captures (iOS App Attest / Android Play Integrity) so photos can only come
+  from the real camera of a real device.
+- A dedicated AI-image detector API (e.g. Hive, Sightengine, Reality Defender) plus Google SynthID detection.
+- Reverse image search (Google Cloud Vision web detection) to catch photos taken from the internet.
+- Full C2PA signature verification on the server.
 
 ### Solo cleanups ("I found it, I'll clean it myself")
 Found a mess and want to clean it right away? Tap **I'll clean it myself** on the Report screen. Your report photos become the before photos and the spot is yours to clean. To keep "litter, then clean it for points" from paying off:
