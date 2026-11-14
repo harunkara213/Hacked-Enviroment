@@ -31,6 +31,7 @@ MAX_PHOTOS = 4
 MAX_PHOTO_BYTES = 8 * 1024 * 1024
 DAILY_POINT_CAP = int(os.getenv("DAILY_POINT_CAP", "1000"))
 MAX_CLEAN_DISTANCE_M = float(os.getenv("MAX_CLEAN_DISTANCE_M", "250"))
+MAX_ACTION_LOCATION_ACCURACY_M = float(os.getenv("MAX_ACTION_LOCATION_ACCURACY_M", "75"))
 MIN_PERCENT_CLEANED = 60
 ALLOWED_MIME = {"image/jpeg", "image/png", "image/webp"}
 
@@ -86,6 +87,7 @@ SPOT_EXTRA_COLUMNS = {
     "seeded": "INTEGER",
     "detection_status": "TEXT",
     "detection_json": "TEXT",
+    "location_accuracy_m": "REAL",
 }
 
 
@@ -151,10 +153,20 @@ def distance_m(lat1, lng1, lat2, lng2) -> float:
     return 2 * r * math.asin(math.sqrt(a))
 
 
-def require_on_site(spot, lat, lng, what="photo"):
+def validate_location_accuracy(accuracy_m):
+    if accuracy_m is None:
+        return
+    if not math.isfinite(accuracy_m) or accuracy_m <= 0:
+        raise HTTPException(400, "Invalid GPS accuracy reading.")
+    if accuracy_m > MAX_ACTION_LOCATION_ACCURACY_M:
+        raise HTTPException(422, f"GPS accuracy is about ±{int(accuracy_m)} m. Wait for a more accurate fix (±{int(MAX_ACTION_LOCATION_ACCURACY_M)} m or better), then retry.")
+
+
+def require_on_site(spot, lat, lng, what="photo", accuracy_m=None):
+    validate_location_accuracy(accuracy_m)
     dist = distance_m(lat, lng, spot["lat"], spot["lng"])
-    if dist > MAX_CLEAN_DISTANCE_M:
-        raise HTTPException(403, f"You're {int(dist)} m away. Take the {what} at the spot.")
+    if dist + (accuracy_m or 0) > MAX_CLEAN_DISTANCE_M:
+        raise HTTPException(403, f"GPS puts you about {int(dist)} m away (±{int(accuracy_m or 0)} m). Get closer to the spot and take the {what} again.")
 
 
 async def read_photo(f: UploadFile) -> tuple[bytes, str]:
@@ -407,11 +419,15 @@ def status():
 
 
 @app.post("/api/ping")
-def ping(user: str = Form(...), lat: float | None = Form(None), lng: float | None = Form(None)):
+def ping(user: str = Form(...), lat: float | None = Form(None), lng: float | None = Form(None), accuracy_m: float | None = Form(None)):
     """App open: remember the user (and where they are) so they can be picked as a verifier."""
     user = clean_name(user)
     with closing(db()) as c, c:
-        seen(c, user, lat, lng)
+        if lat is None or lng is None or (accuracy_m is not None and accuracy_m > MAX_ACTION_LOCATION_ACCURACY_M):
+            c.execute("INSERT INTO users (name, lat, lng, seen) VALUES (?,?,?,?) ON CONFLICT(name) DO UPDATE SET lat=NULL, lng=NULL, seen=excluded.seen",
+                      (user, None, None, time.time()))
+        else:
+            seen(c, user, lat, lng)
     return {"ok": True}
 
 
@@ -433,6 +449,7 @@ async def report_spot(
     user: str = Form(...),
     lat: float = Form(...),
     lng: float = Form(...),
+    accuracy_m: float | None = Form(None),
     photos: list[UploadFile] = File(...),
     self_clean: bool = Form(False),
 ):
@@ -441,6 +458,7 @@ async def report_spot(
     user = clean_name(user)
     if not -90 <= lat <= 90 or not -180 <= lng <= 180:
         raise HTTPException(400, "Invalid location.")
+    validate_location_accuracy(accuracy_m)
     if not 1 <= len(photos) <= MAX_PHOTOS:
         raise HTTPException(400, f"Add 1 to {MAX_PHOTOS} photos.")
     if self_clean:
@@ -465,12 +483,12 @@ async def report_spot(
     with closing(db()) as c, c:
         seen(c, user, lat, lng)
         c.execute("""INSERT INTO spots (id, lat, lng, reporter, photos, difficulty, bags, minutes,
-                     hazards, summary, points, ai_source, created_at, detection_status, detection_json)
-                     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                     hazards, summary, points, ai_source, created_at, detection_status, detection_json, location_accuracy_m)
+                     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                   (spot_id, lat, lng, user, json.dumps(names), result["difficulty"],
                    result["estimated_bags"], result["estimated_minutes"], json.dumps(result["hazards"]),
                    result["summary"], points, result["source"], now, result["outcome"],
-                   json.dumps({k: result[k] for k in ("outcome", "objects", "litter_confidence", "rationale")})))
+                   json.dumps({k: result[k] for k in ("outcome", "objects", "litter_confidence", "rationale")}), accuracy_m))
         if self_clean:
             c.execute("""UPDATE spots SET self_clean=1, status='claimed', claimed_by=?, claimed_at=?,
                          task_before_photo=? WHERE id=?""", (user, now, names[0], spot_id))
@@ -568,6 +586,7 @@ async def clean_spot(
     user: str = Form(...),
     lat: float = Form(...),
     lng: float = Form(...),
+    accuracy_m: float | None = Form(None),
     photo: UploadFile = File(...),
 ):
     user = clean_name(user)
@@ -577,7 +596,7 @@ async def clean_spot(
         raise HTTPException(409, "This spot has already been cleaned.")
     if s["status"] != "claimed" or s["claimed_by"] != user:
         raise HTTPException(409, "Claim this spot first.")
-    require_on_site(s, lat, lng, "after photo")
+    require_on_site(s, lat, lng, "after photo", accuracy_m)
     if s["self_clean"] and time.time() - (s["claimed_at"] or 0) < SELF_CLEAN_MIN_SECONDS:
         raise HTTPException(409, "That was fast! Finish cleaning, then take the after photo.")
 
@@ -624,14 +643,14 @@ async def clean_spot(
 
 
 @app.post("/api/spots/{spot_id}/start")
-async def start_spot(spot_id: str, user: str = Form(...), lat: float = Form(...), lng: float = Form(...), photo: UploadFile = File(...)):
+async def start_spot(spot_id: str, user: str = Form(...), lat: float = Form(...), lng: float = Form(...), accuracy_m: float | None = Form(None), photo: UploadFile = File(...)):
     user = clean_name(user)
     before = await read_photo(photo)
     with closing(db()) as c, c:
         s = get_spot(c, spot_id)
         if s["status"] != "claimed" or s["claimed_by"] != user:
             raise HTTPException(409, "Claim this spot first.")
-        require_on_site(s, lat, lng, "before photo")
+        require_on_site(s, lat, lng, "before photo", accuracy_m)
         name = save_photo(*before, c=c)
         c.execute("UPDATE spots SET task_before_photo=? WHERE id=? AND status='claimed' AND claimed_by=?",
                   (name, spot_id, user))
@@ -646,6 +665,7 @@ async def verify_spot(
     verdict: str = Form(...),          # "clean" | "dirty"
     lat: float = Form(...),
     lng: float = Form(...),
+    accuracy_m: float | None = Form(None),
     photo: UploadFile = File(...),
 ):
     """A third person checks the cleanup in person. Only then are points paid."""
@@ -664,7 +684,7 @@ async def verify_spot(
     out = spot_out(s)
     if s["verifier"] != user and not out["open_to_anyone"]:
         raise HTTPException(403, f"{s['verifier']} was picked to verify this spot.")
-    require_on_site(s, lat, lng, "verification photo")
+    require_on_site(s, lat, lng, "verification photo", accuracy_m)
 
     check = await read_photo(photo)
     before = [load_photo(p) for p in json.loads(s["photos"])]
@@ -709,6 +729,7 @@ async def flag_spot(
     user: str = Form(...),
     lat: float = Form(...),
     lng: float = Form(...),
+    accuracy_m: float | None = Form(None),
     photo: UploadFile = File(...),
 ):
     """Anyone passing by can report a 'cleaned' spot as still dirty. Points are taken back."""
@@ -719,7 +740,7 @@ async def flag_spot(
         raise HTTPException(409, "Only cleaned spots can be flagged.")
     if user == s["cleaner"]:
         raise HTTPException(403, "You cleaned this one.")
-    require_on_site(s, lat, lng, "photo")
+    require_on_site(s, lat, lng, "photo", accuracy_m)
     img = await read_photo(photo)
     a = ai.assess_spot([img])
     if a.get("looks_fake"):

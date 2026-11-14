@@ -57,39 +57,62 @@ const hideLoading = () => $('loading').classList.add('hidden');
 
 // Phones first return a rough Wi-Fi/cell fix (often 200-500 m off), then real GPS.
 // So collect fixes for a few seconds and keep the most accurate one.
-const GOOD_ACCURACY_M = 20;
-function locError(kind) {
+const PHOTO_LOCATION_ACCURACY_M = 50;
+const MAX_REPORT_LOCATION_ACCURACY_M = 75;
+function locError(kind, accuracy) {
   const e = new Error(kind === 'denied' ? 'Location access is turned off for this site.'
     : kind === 'unsupported' ? 'This browser has no location support.'
+    : kind === 'inaccurate' ? `GPS is only accurate to about ${Math.round(accuracy)} m.`
     : "Couldn't get a GPS signal.");
-  e.kind = kind;  // 'denied' | 'unavailable' | 'unsupported'
+  e.kind = kind;  // 'denied' | 'unavailable' | 'unsupported' | 'inaccurate'
+  e.accuracy = accuracy;
   return e;
 }
 
-function getLocation(maxWaitMs = 8000) {
+function getLocation({ maxWaitMs = 12000, maxAccuracyM = 1000 } = {}) {
   return new Promise((resolve, reject) => {
     if (!navigator.geolocation) return reject(locError('unsupported'));
     let best = null, id = null, done = false, denied = false;
-    const finish = () => {
-      if (done) return;
+    const readFix = (p) => {
+      const accuracy = p.coords.accuracy;
+      if (!Number.isFinite(accuracy) || accuracy <= 0 || !Number.isFinite(p.coords.latitude) || !Number.isFinite(p.coords.longitude)) return null;
+      return { lat: p.coords.latitude, lng: p.coords.longitude, acc: Math.ceil(accuracy), timestamp: p.timestamp };
+    };
+    const finishWith = (fix) => {
+      if (done || !fix || fix.acc > maxAccuracyM) return false;
       done = true;
       navigator.geolocation.clearWatch(id);
-      if (best) { setMyLocation(best); return resolve(best); }
-      if (denied) return reject(locError('denied'));
-      // No precise fix in time (indoors, slow GPS): accept any recent rough fix rather than failing.
+      setMyLocation(fix, true);
+      resolve(fix);
+      return true;
+    };
+    const finish = () => {
+      if (done) return;
+      navigator.geolocation.clearWatch(id);
+      if (denied) { done = true; return reject(locError('denied')); }
+      // Ask for one final fresh high-accuracy reading; never substitute a two-minute-old cached fix.
       navigator.geolocation.getCurrentPosition(
         (p) => {
-          const fix = { lat: p.coords.latitude, lng: p.coords.longitude, acc: Math.round(p.coords.accuracy) };
-          setMyLocation(fix); resolve(fix);
+          const candidate = readFix(p);
+          if (candidate && (!best || candidate.acc < best.acc)) best = candidate;
+          if (!finishWith(best)) {
+            done = true;
+            reject(locError(best ? 'inaccurate' : 'unavailable', best?.acc));
+          }
         },
-        (err) => reject(locError(err.code === 1 ? 'denied' : 'unavailable')),
-        { enableHighAccuracy: false, timeout: 10000, maximumAge: 120000 });
+        (err) => {
+          if (best && finishWith(best)) return;
+          done = true;
+          reject(locError(err.code === 1 ? 'denied' : best ? 'inaccurate' : 'unavailable', best?.acc));
+        },
+        { enableHighAccuracy: true, timeout: 8000, maximumAge: 0 });
     };
     id = navigator.geolocation.watchPosition(
       (p) => {
-        const fix = { lat: p.coords.latitude, lng: p.coords.longitude, acc: Math.round(p.coords.accuracy) };
+        const fix = readFix(p);
+        if (!fix) return;
         if (!best || fix.acc <= best.acc) best = fix;
-        if (best.acc <= GOOD_ACCURACY_M) finish();
+        if (best.acc <= maxAccuracyM) finishWith(best);
       },
       (err) => { if (err.code === 1) { denied = true; finish(); } },  // keep waiting on timeouts
       { enableHighAccuracy: true, timeout: maxWaitMs, maximumAge: 0 });
@@ -99,9 +122,13 @@ function getLocation(maxWaitMs = 8000) {
 
 // Like getLocation, but if it fails we explain how to turn location on and let the
 // user retry, so a photo they just took isn't thrown away. Resolves null on Cancel.
-async function getLocationOrAsk(loadingImg) {
+async function getLocationOrAsk(loadingImg, requirePhotoAccuracy = false) {
   for (;;) {
-    try { return await getLocation(); } catch (e) {
+    try {
+      return await getLocation({ maxWaitMs: requirePhotoAccuracy ? 18000 : 12000,
+        maxAccuracyM: requirePhotoAccuracy ? PHOTO_LOCATION_ACCURACY_M : 500 });
+    } catch (e) {
+      e.photoAccuracy = requirePhotoAccuracy;
       hideLoading();
       if (!(await askForLocation(e))) return null;
       showLoading('Getting a precise GPS fix…', loadingImg);
@@ -124,7 +151,7 @@ function requestLocationFromTap() {
   return new Promise((resolve) => {
     if (!navigator.geolocation) return resolve('unsupported');
     navigator.geolocation.getCurrentPosition(
-      (p) => { setMyLocation({ lat: p.coords.latitude, lng: p.coords.longitude, acc: Math.round(p.coords.accuracy) }); resolve('granted'); },
+      (p) => { setMyLocation({ lat: p.coords.latitude, lng: p.coords.longitude, acc: Math.ceil(p.coords.accuracy) }, true); resolve('granted'); },
       (err) => resolve(err.code === 1 ? 'denied' : 'granted'),  // timeout = permission is fine, GPS just slow
       { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 });
   });
@@ -160,11 +187,12 @@ const hideLocModal = () => $('locModal').classList.add('hidden');
 
 function askForLocation(err) {
   const denied = err.kind === 'denied' || err.kind === 'unsupported';
+  const inaccurate = err.kind === 'inaccurate';
   showLocModal(denied
     ? { title: 'Location access needed', primary: 'Try again', steps: fixSteps(),
         msg: 'We use your location to prove the photo was taken at the spot. Your photo is saved: turn location on, then try again.' }
-    : { title: 'No GPS signal yet', primary: 'Try again',
-        msg: "Your phone hasn't found you yet. Step outside or near a window, then try again. Your photo is saved." });
+    : { title: inaccurate ? 'GPS needs a clearer fix' : 'No GPS signal yet', primary: 'Try again',
+        msg: `${inaccurate ? `The current reading is only accurate to about ±${Math.round(err.accuracy)} m; ${err.photoAccuracy ? `photos need ±${PHOTO_LOCATION_ACCURACY_M} m or better` : 'distances may be off by that much'}. ` : "Your phone hasn't found you yet. "}Turn on Precise Location, then step outside or near a window and try again. ${err.photoAccuracy ? 'Your photo is saved.' : 'Try locating yourself again.'}` });
   return new Promise((resolve) => {
     $('locRetry').onclick = () => {
       // Ask again from inside the tap so the browser can show its pop-up.
@@ -214,9 +242,10 @@ function startTracking() {
 }
 
 let accCircle = null;
-function setMyLocation(fix) {
+function setMyLocation(fix, freshRead = false) {
+  if (!Number.isFinite(fix.lat) || !Number.isFinite(fix.lng) || !Number.isFinite(fix.acc) || fix.acc <= 0) return;
   // Ignore a rougher fix if we got a precise one in the last minute.
-  if (myLocation && fix.acc > myLocation.acc * 2 && Date.now() - myLocation.t < 60000) return;
+  if (!freshRead && myLocation && fix.acc > Math.max(100, myLocation.acc * 2) && Date.now() - myLocation.t < 60000) return;
   myLocation = { ...fix, t: Date.now() };
   if (!map) return;
   if (meMarker) meMarker.setLatLng([fix.lat, fix.lng]);
@@ -233,10 +262,12 @@ function distTo(s) {
 }
 function fmtDist(d) {
   if (d == null) return '';
-  // Within GPS error of the spot: you're there.
-  if (d <= Math.max(30, myLocation.acc)) return "📍 You're here";
-  const txt = d < 1000 ? `${Math.round(d / 10) * 10} m away` : `${(d / 1000).toFixed(1)} km away`;
-  return myLocation.acc > 100 ? `${txt} (weak GPS ±${myLocation.acc} m)` : txt;
+  if (d <= 15 && myLocation.acc <= 30) return "📍 You're here";
+  if (d <= myLocation.acc) return `Near this spot (GPS ±${myLocation.acc} m)`;
+  const step = myLocation.acc >= 500 ? 500 : myLocation.acc >= 150 ? 100 : myLocation.acc >= 50 ? 25 : 10;
+  const rounded = Math.round(d / step) * step;
+  const txt = rounded < 1000 ? `${rounded} m away` : `${(rounded / 1000).toFixed(1)} km away`;
+  return myLocation.acc > 30 ? `≈${txt} (GPS ±${myLocation.acc} m)` : txt;
 }
 
 // Keep enough detail to recognize small or distant litter without uploading full camera originals.
@@ -507,7 +538,10 @@ async function ping() {
   fd.append('user', me);
   // Only read location in the background once it's allowed; asking is done from a tap.
   if ((await locPermission()) !== 'denied') {
-    try { const p = await getLocation(); fd.append('lat', p.lat); fd.append('lng', p.lng); } catch {}
+    try {
+      const p = await getLocation({ maxWaitMs: 12000, maxAccuracyM: MAX_REPORT_LOCATION_ACCURACY_M });
+      fd.append('lat', p.lat); fd.append('lng', p.lng); fd.append('accuracy_m', p.acc);
+    } catch {}
   }
   try { await api('/api/ping', { method: 'POST', body: fd }); } catch {}
   if ((await locPermission()) !== 'denied') startTracking();
@@ -644,7 +678,7 @@ function openSpot(id) {
       <div class="rounded-xl bg-slate-50 px-3 py-2">⏱️ ~<b>${s.minutes}</b> min</div>
     </div>
     ${hazards}
-    <div class="text-xs text-slate-400 mt-3">Reported by ${userLink(s.reporter)} · ${timeAgo(s.created_at)}${myLocation ? ` · ${fmtDist(distTo(s))}` : ''}${s.ai_source === 'demo' ? ' · demo score' : ''}</div>
+    <div class="text-xs text-slate-400 mt-3">Reported by ${userLink(s.reporter)} · ${timeAgo(s.created_at)}${Number.isFinite(s.location_accuracy_m) ? ` · report GPS ±${Math.round(s.location_accuracy_m)} m` : ''}${myLocation ? ` · ${fmtDist(distTo(s))}` : ''}${s.ai_source === 'demo' ? ' · demo score' : ''}</div>
     ${s.status === 'open' ? note : ''}
     ${action}`);
 }
@@ -658,13 +692,14 @@ async function sendPhoto(url, input, fields, loadingText) {
   try { blob = await compress(file); } catch (e) { toast(e.message, 'err'); return null; }
   const img = URL.createObjectURL(blob);
   showLoading('Getting a precise GPS fix…', img);
-  const pos = await getLocationOrAsk(img);
+  const pos = await getLocationOrAsk(img, true);
   if (!pos) { hideLoading(); return null; }
   showLoading(loadingText, img);
   const fd = new FormData();
   fd.append('user', me);
   fd.append('lat', pos.lat);
   fd.append('lng', pos.lng);
+  fd.append('accuracy_m', pos.acc);
   for (const [k, v] of Object.entries(fields)) fd.append(k, v);
   fd.append('photo', blob, 'photo.jpg');
   try {
@@ -759,10 +794,10 @@ async function startTask(id, input) {
   try { blob = await compress(file); } catch (e) { return toast(e.message, 'err'); }
   const img = URL.createObjectURL(blob);
   showLoading('Getting a precise GPS fix…', img);
-  const pos = await getLocationOrAsk(img);
+  const pos = await getLocationOrAsk(img, true);
   hideLoading();
   if (!pos) return;
-  const fd = new FormData(); fd.append('user', me); fd.append('lat', pos.lat); fd.append('lng', pos.lng); fd.append('photo', blob, 'before.jpg');
+  const fd = new FormData(); fd.append('user', me); fd.append('lat', pos.lat); fd.append('lng', pos.lng); fd.append('accuracy_m', pos.acc); fd.append('photo', blob, 'before.jpg');
   try {
     await api(`/api/spots/${id}/start`, { method: 'POST', body: fd });
     toast('Before photo saved. Cleanup started!'); await loadSpots(); openSpot(id);
@@ -820,13 +855,14 @@ async function addFiles(files) {
 async function submitReport(selfClean = false) {
   if (!pending.length) return;
   showLoading('Getting a precise GPS fix…', pending[0].url);
-  const pos = await getLocationOrAsk(pending[0].url);
+  const pos = await getLocationOrAsk(pending[0].url, true);
   if (!pos) { hideLoading(); return; }
   showLoading('AI is checking objects and scene context…', pending[0].url);
   const fd = new FormData();
   fd.append('user', me);
   fd.append('lat', pos.lat);
   fd.append('lng', pos.lng);
+  fd.append('accuracy_m', pos.acc);
   fd.append('self_clean', selfClean ? 'true' : 'false');
   pending.forEach((b, i) => fd.append('photos', b, `photo${i}.jpg`));
   try {
