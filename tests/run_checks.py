@@ -16,7 +16,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 os.environ.setdefault("DB_PATH", f"{tempfile.mkdtemp()}/checks.db")
-os.environ.update(DONATION_DEMO="1", SEED_DEMO="1", GEMINI_API_KEY="")
+os.environ.update(DONATION_DEMO="1", SEED_DEMO="1", GEMINI_API_KEY="", TEAM_KEY="test-team-key")
 sys.path.insert(0, str(ROOT))
 
 from fastapi.testclient import TestClient  # noqa: E402
@@ -53,6 +53,7 @@ def stub_verify(before, after):
     return {"same_place": ai_says["same_place"], "percent_cleaned": ai_says["percent"], "comment": "stub", "source": "stub"}
 
 
+_real_verify = ai.verify_cleanup
 ai.assess_spot, ai.verify_cleanup = stub_assess, stub_verify
 FULL = ai.points_for(3, 4)
 
@@ -172,11 +173,15 @@ ok(not c.get("/api/users/v2").json()["donations"]["eligible"] and c.get("/api/us
    "a 3rd 'still dirty' flag locks donations")
 
 print("== complaints")
-ok(c.post("/api/users/dan/complain", data={"user": "nobody", "reason": "fake_photos"}).status_code == 403, "brand-new account can't complain")
-ok(c.post("/api/users/dan/complain", data={"user": "rep2", "reason": "littering"}).status_code == 200, "first complaint filed")
-ok(c.post("/api/users/dan/complain", data={"user": "rep2", "reason": "littering"}).status_code == 409, "duplicate complaint ignored")
+ok(c.post("/api/users/dan/complain", data={"user": "rep2", "reason": "littering"}).status_code == 403,
+   "complaints without the team key are refused (users can't lock each other)")
+ok(c.post("/api/users/dan/complain", data={"user": "rep2", "reason": "littering", "team_key": "wrong"}).status_code == 403,
+   "complaints with a wrong team key are refused")
+ok(c.post("/api/users/dan/complain", data={"user": "nobody", "reason": "fake_photos", "team_key": "test-team-key"}).status_code == 403, "brand-new account can't complain")
+ok(c.post("/api/users/dan/complain", data={"user": "rep2", "reason": "littering", "team_key": "test-team-key"}).status_code == 200, "first complaint filed")
+ok(c.post("/api/users/dan/complain", data={"user": "rep2", "reason": "littering", "team_key": "test-team-key"}).status_code == 409, "duplicate complaint ignored")
 ok(c.get("/api/users/dan").json()["donations"]["eligible"], "one complaint: still eligible")
-c.post("/api/users/dan/complain", data={"user": "rep1", "reason": "fake_photos"})
+c.post("/api/users/dan/complain", data={"user": "rep1", "reason": "fake_photos", "team_key": "test-team-key"})
 d = c.get("/api/users/dan").json()["donations"]
 ok(d["locked"] and not d["eligible"], "two complaints: locked")
 ok(d["refunded_cents"] == 4000 and d["held_cents"] == 0, "held donations refunded on lock")
@@ -313,6 +318,15 @@ ok(r.status_code == 200, "~445 m away with ±60 m GPS: margin of error counts in
 r = c.post(f"/api/spots/{gd2}/start", data={"user": "bob", "lat": "53.5300", "lng": "-113.5263", "accuracy_m": "20"}, files=img())
 ok(r.status_code == 403 and r.json()["detail"]["too_far"] and r.json()["detail"]["distance_m"] > 700,
    "~750 m away is refused with a 'too far' answer the app can retry")
+
+print("== AI offline")
+ai.verify_cleanup = _real_verify  # no GEMINI_API_KEY here, so this is the offline fallback
+before_pts = points("offbob")
+r = full_cleanup("rep1", "offbob")
+sid = [s for s in c.get("/api/spots").json() if s.get("claimed_by") == "offbob"]
+ok(r.status_code == 503 and points("offbob") == before_pts, "AI offline: the cleanup is not approved and no points are paid")
+ok(bool(sid) and sid[0]["status"] == "claimed", "AI offline: the spot stays claimed so the volunteer can retry")
+ai.verify_cleanup = stub_verify
 
 print(f"\n{'ALL PASSED' if not FAILED else f'{len(FAILED)} FAILED'}")
 sys.exit(1 if FAILED else 0)

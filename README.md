@@ -52,7 +52,7 @@ The Tasks tab lists open spots sorted by **nearest** or **most points**, plus th
 ### Donations (only for proven, trusted volunteers)
 People can tip a volunteer, but the rules are built so littering for money never pays:
 - **Unlock only after:** 10 approved cleanups of other people's reports (solo cleanups don't count), on spots reported by 5+ different people, and an account at least 14 days old.
-- **Locked for good** after any "still dirty" flag, or after complaints reviewed internally by the team (complaints are never shown in the app).
+- **Locked for good** after a strike (a "still dirty" flag beyond the first 2 free ones), or after complaints filed internally by the team (complaints are never shown in the app).
 - Publicly, only **"💛 Verified · donations on"** is shown. Nobody else's donation status is visible to other users.
 - Donations go to the **person, not a specific cleanup**, so there's no per-spot payout to farm.
 - **Promises:** a verified volunteer can say "I'll remove 100 kg of trash if I get $50". Their profile and Ranks

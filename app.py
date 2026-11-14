@@ -1,7 +1,7 @@
 """Hacker Environment - report litter, clean it up, earn points.
 
-Flow: report -> claim -> clean (AI pre-check, points ON HOLD) -> a random nearby
-person checks it in person -> points paid. Anyone can later flag "still dirty".
+Flow: report -> claim -> before photo at the spot -> after photo -> the AI compares them and
+the points are paid. Anyone can later flag "still dirty" (photo at the spot) to reopen it.
 
 Run:  .venv/bin/uvicorn app:app --reload --host 0.0.0.0 --port 8000
 """
@@ -62,6 +62,8 @@ DON_MAX_COMPLAINTS = 1                     # 2+ complaints from different users 
 DON_MONTHLY_CAP_CENTS = 5000               # max $50 per cleaner per month: not worth littering for
 DON_HOLD_S = 7 * 24 * 3600                 # donations are held 7 days and refunded if a problem shows up
 COMPLAINT_REASONS = {"fake_photos", "littering", "fake_cleanup", "harassment", "other"}
+# Complaints are filed by the team only. Set TEAM_KEY on Render; without it the endpoint is closed.
+TEAM_KEY = os.getenv("TEAM_KEY", "")
 STRIKE_KINDS = ("rejected", "revoke", "fake")
 
 # "I found it and I'm cleaning it myself": allowed, but made unattractive for anyone who'd litter first.
@@ -386,7 +388,7 @@ def level_for(points: int) -> dict:
 # ---------- demo data ----------
 # A few park spots around U of A so the map isn't empty at the demo. Added once when
 # SEED_DEMO=1 (never re-added after someone cleans or deletes them). Scores are set
-# by hand: these are downloaded photos, which the AI's fake-photo check would reject.
+# by hand so the demo map doesn't depend on (or pay for) AI calls.
 DEMO_SPOTS = [
     {"id": "demo-emily-murphy", "lat": 53.5297, "lng": -113.5355, "file": "park-lawn-picnic.jpg",
      "reporter": "Ava", "difficulty": 3, "bags": 4, "minutes": 60, "hours_ago": 5,
@@ -596,11 +598,10 @@ def ai_check():
     Cached for 10 minutes, so it can't be used to run up the AI bill."""
     if _ai_check_cache["result"] and time.time() - _ai_check_cache["at"] < 600:
         return {**_ai_check_cache["result"], "cached": True}
-    from PIL import Image, ImageDraw
-    im = Image.new("RGB", (320, 240), (90, 140, 70))           # grass
-    d = ImageDraw.Draw(im)
-    d.rectangle((140, 120, 175, 200), fill=(200, 40, 40))      # a can
-    d.polygon([(60, 180), (120, 150), (130, 210)], fill=(240, 240, 240))  # a wrapper
+    from PIL import Image
+    # The demo litter photo: a real scene, so a healthy AI answers "litter_detected".
+    im = Image.open(BASE / "static" / "demo" / "playground-benches.jpg").convert("RGB")
+    im.thumbnail((640, 640))
     buf = io.BytesIO()
     im.save(buf, "JPEG", quality=85)
     started = time.time()
@@ -829,6 +830,8 @@ async def clean_spot(
     before = [load_photo(p) for p in json.loads(s["photos"])] + [load_photo(s["task_before_photo"])]
     v = ai.verify_cleanup(before, after)
 
+    if v.get("source") == "demo":
+        raise HTTPException(503, v["comment"])
     if not v["same_place"]:
         raise HTTPException(422, "The after photo doesn't look like the same place. " + v["comment"])
     if v["percent_cleaned"] < MIN_PERCENT_CLEANED:
@@ -919,8 +922,13 @@ async def flag_spot(
 
 
 @app.post("/api/users/{name}/complain")
-def complain(name: str, user: str = Form(...), reason: str = Form(...), spot_id: str | None = Form(None)):
-    """Report a user (fake photos, littering...). 2+ complaints from different people lock donations."""
+def complain(name: str, user: str = Form(...), reason: str = Form(...), spot_id: str | None = Form(None),
+             team_key: str = Form("")):
+    """Team only: file a complaint about a user (fake photos, littering...). 2+ complaints from
+    different people lock donations. Needs the TEAM_KEY, so random users can't lock someone."""
+    import hmac
+    if not TEAM_KEY or not hmac.compare_digest(team_key, TEAM_KEY):
+        raise HTTPException(403, "Complaints are handled by the team.")
     name, user = clean_name(name), clean_name(user)
     if name == user:
         raise HTTPException(400, "You can't report yourself.")
