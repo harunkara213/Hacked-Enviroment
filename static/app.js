@@ -592,7 +592,8 @@ function openSpot(id) {
       </label>` : ''}
       <p class="text-xs text-center text-slate-500 mt-2">${s.self_clean
         ? '🧹 Solo cleanup: your report photos are the BEFORE photos. Clean it, then take the after photo from the same spot. A nearby volunteer will check it.'
-        : 'Capture the on-site before photo before cleaning. Another volunteer checks the after photo.'}</p>`;
+        : 'Capture the on-site before photo before cleaning. Another volunteer checks the after photo.'}</p>
+      <button onclick="releaseSpot('${s.id}', this)" class="mt-3 w-full rounded-2xl text-slate-500 font-semibold py-3 underline">Give up this task</button>`;
   } else if (s.status === 'claimed') {
     action = `<div class="mt-5 rounded-2xl bg-amber-50 p-4 text-sm text-amber-800 font-semibold">⏳ ${esc(s.claimed_by)} is cleaning this spot.</div>`;
   } else {
@@ -681,6 +682,24 @@ async function submitFlag(id, input) {
   if (!r) return;
   toast(`Thanks! Spot is back on the map${r.reward ? ` · +${r.reward} pts` : ''}`);
   openSpot(id);
+}
+
+// Give up a claimed task (two taps), so the spot goes back on the map for someone else.
+async function releaseSpot(id, btn) {
+  if (!btn.dataset.armed) {
+    btn.dataset.armed = '1';
+    btn.textContent = 'Tap again to give it up';
+    setTimeout(() => { if (btn.isConnected) { delete btn.dataset.armed; btn.textContent = 'Give up this task'; } }, 4000);
+    return;
+  }
+  const fd = new FormData();
+  fd.append('user', me);
+  try {
+    await api(`/api/spots/${id}/release`, { method: 'POST', body: fd });
+    toast('Task released. It’s back on the map for others.');
+    await loadSpots();
+    openSpot(id);
+  } catch (e) { toast(e.message, 'err'); }
 }
 
 // Two taps to delete, so a slip of the thumb doesn't remove a report.

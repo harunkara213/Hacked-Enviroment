@@ -482,6 +482,23 @@ def check_solo_limit(c, user):
                                  "Leave this one for another volunteer.")
 
 
+@app.post("/api/spots/{spot_id}/release")
+def release_spot(spot_id: str, user: str = Form(...)):
+    """Give up a task you claimed: the spot goes back on the map at full points for anyone."""
+    user = clean_name(user)
+    with closing(db()) as c, c:
+        s = get_spot(c, spot_id)
+        if s["status"] != "claimed" or s["claimed_by"] != user:
+            raise HTTPException(409, "You're not working on this spot.")
+        tb = s["task_before_photo"]
+        if tb and tb not in json.loads(s["photos"]):  # a solo report reuses its report photo: keep that
+            c.execute("DELETE FROM photos WHERE name=?", (tb,))
+        c.execute("""UPDATE spots SET status='open', claimed_by=NULL, claimed_at=NULL, task_before_photo=NULL,
+                     self_clean=0, points=? WHERE id=?""", (ai.points_for(s["difficulty"], s["bags"]), spot_id))
+        row = get_spot(c, spot_id)
+    return spot_out(row)
+
+
 @app.post("/api/spots/{spot_id}/delete")
 def delete_spot(spot_id: str, user: str = Form(...)):
     """The reporter can take back a report while nobody is working on it. The +5 report bonus goes back too."""
