@@ -6,6 +6,7 @@ const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '
 let me = storeGet('he_user');
 let spots = [];
 let map, markersLayer, meMarker;
+let mapFitted = false;
 let myLocation = null;
 let aiStatus = null;
 let pending = []; // compressed photo blobs for a new report
@@ -431,7 +432,8 @@ async function loadTasks() {
 
 // ---------- user profile: donate / report ----------
 function donationRules(d) {
-  return d.rules.map((r) => `
+  // A rule that needs 0 (e.g. account age in demo mode) is always met: don't show "0+ days 0/0".
+  return d.rules.filter((r) => r.permanent || r.need > 0).map((r) => `
     <div class="flex items-center gap-2 text-sm py-1">
       <span>${r.ok ? '✅' : r.permanent ? '⛔' : '⬜'}</span>
       <span class="flex-1 ${r.ok ? 'text-slate-700' : 'text-slate-500'}">${esc(r.label)}</span>
@@ -591,6 +593,11 @@ async function loadSpots() {
   markersLayer.clearLayers();
   for (const s of spots) {
     L.marker([s.lat, s.lng], { icon: pinIcon(s) }).on('click', () => openSpot(s.id)).addTo(markersLayer);
+  }
+  // First load: show every spot instead of an almost empty close-up of campus.
+  if (!mapFitted && spots.length) {
+    mapFitted = true;
+    map.fitBounds(L.latLngBounds(spots.map((s) => [s.lat, s.lng])), { padding: [40, 40], maxZoom: 15 });
   }
   $('cntOpen').textContent = spots.filter((s) => s.status === 'open').length;
   $('cntClaimed').textContent = spots.filter((s) => s.status === 'claimed').length;
@@ -1001,14 +1008,15 @@ async function loadLeaders() {
   }).join('');
   // Only verified volunteers get a badge; nobody else's donation status is shown.
   const badge = (r) => r.donatable
-    ? '<span class="ml-1.5 text-[10px] font-extrabold uppercase tracking-wide bg-amber-100 text-amber-800 rounded-full px-2 py-0.5">💛 Verified · donations on</span>'
+    ? '<span class="inline-block whitespace-nowrap mt-1 text-[10px] font-extrabold uppercase tracking-wide bg-amber-100 text-amber-800 rounded-full px-2 py-0.5">💛 Verified · donations on</span>'
     : '';
   $('leaderList').innerHTML = rows.length ? rows.map((r, i) => `
     <li data-user="${esc(r.user)}" onclick="openUser(this.dataset.user)" class="flex items-center gap-3 px-4 py-3 cursor-pointer ${r.user === me ? 'bg-forest-50' : ''}">
       <div class="w-7 text-center font-extrabold text-slate-400">${i + 1}</div>
       <div class="flex-1 min-w-0">
         <div class="font-bold truncate">${esc(r.user)}${r.user === me ? ' (you)' : ''}</div>
-        <div class="text-xs text-slate-500 mt-0.5">${esc(r.level)} · ${r.cleanups} cleanup${r.cleanups === 1 ? '' : 's'}${badge(r)}</div>
+        <div class="text-xs text-slate-500 mt-0.5">${esc(r.level)} · ${r.cleanups} cleanup${r.cleanups === 1 ? '' : 's'}</div>
+        ${r.donatable ? `<div>${badge(r)}</div>` : ''}
         ${r.goal ? `<div class="text-xs text-forest-700 font-semibold mt-1">🎯 ${r.goal.promise_kg} kg for ${money(r.goal.target_cents)} · ${money(r.goal.raised_cents)} raised</div>` : ''}
       </div>
       <div class="font-extrabold text-forest-700">${r.points}</div>

@@ -223,5 +223,7 @@ def verify_cleanup(before: list[tuple[bytes, str]], after: tuple[bytes, str]) ->
         except Exception as e:
             LAST_ERROR = repr(e)[:300]
             print(f"[ai] verify failed, using demo mode: {e!r}")
-    return {"same_place": True, "percent_cleaned": 100,
-            "comment": "Nice work! (demo mode: AI offline)", "source": "demo"}
+    # AI unavailable: never approve a cleanup automatically (that would pay points for any photo).
+    return {"same_place": False, "percent_cleaned": 0,
+            "comment": "The AI check is offline right now, so we can't confirm the cleanup. Please try again in a few minutes.",
+            "source": "demo"}

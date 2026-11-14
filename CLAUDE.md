@@ -48,19 +48,20 @@ Live: https://hacker-environment.onrender.com. **Every push to `main` deploys to
   taken back, max 3 a day, 60 s minimum, never counts toward donations.
 - Any strike ("still dirty" flag) or 2+ complaints locks donations for good. Complaints are INTERNAL:
   no "report user" button, never shown in the app or API (`public_donation_status` strips them), filed only
-  through `/api/users/{name}/complain` by the team. Publicly, only "💛 Verified · donations on" is shown;
+  through `/api/users/{name}/complain` with the `TEAM_KEY` (Render env; without it the endpoint is closed). Publicly, only "💛 Verified · donations on" is shown;
   nobody else's donation status (locked or not) is visible to other users. Donations: $1-20, $50/month cap, 7-day hold, go to a person, not a cleanup.
 - **Photo authenticity checks:** `maxAge` and `noScreenshots` are ON, `aiMetadata` is OFF (it flagged real
   iPhone photos), in `PHOTO_CHECKS` in `static/app.js`. Server side: `CHECK_REUSED_PHOTOS` (default 1 = ON). The app rejects photos older than
-  10 minutes, PNG screenshots and files whose metadata says AI-generated/AI-edited (IPTC/C2PA digital source type
+  10 minutes and PNG screenshots; with `aiMetadata` on it would also reject files whose metadata says AI-generated/AI-edited (IPTC/C2PA digital source type
   "trainedAlgorithmicMedia", case-insensitive) or edited (Photoshop...). A C2PA label by itself is
   NOT a reason to reject: Pixel/Galaxy/iPhone cameras add it to normal photos. The server rejects
   any photo that was already uploaded (`photocheck.py`). App-side rejections are reported to
   `/api/client-reject` and the last 5 show on `/api/status` (check there for false alarms).
-- If the AI fails, scoring must not accept photos automatically (`ai.py` demo path gives 0 points).
+- If the AI fails, scoring must not accept photos automatically: the `ai.py` demo path gives 0 points for a report
+  and refuses a cleanup (same_place false); `/clean` answers 503 "try again" and the spot stays claimed.
 
 ## AI
-- Default model in `ai.py` (`MODEL`, env `GEMINI_MODEL`): `gemini-2.5-flash` with thinking off (cost ~0.15 cent per photo;
+- Default model in `ai.py` (`MODEL`, env `GEMINI_MODEL`): `gemini-2.5-flash` with thinking off (cost ~$0.002 per photo;
   3.8 Flash was ~5x more). Don't change it without checking the price. If it doesn't exist for our key, `_generate` falls back to
   `gemini-2.5-flash`. `/api/status` shows the model actually in use and the last AI error.
 - Keep structured JSON output (`response_schema`). There is no AI fake-photo check (removed on purpose);
