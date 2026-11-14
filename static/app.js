@@ -592,7 +592,11 @@ async function ping() {
       fd.append('lat', p.lat); fd.append('lng', p.lng); fd.append('accuracy_m', p.acc);
     } catch {}
   }
-  try { await api('/api/ping', { method: 'POST', body: fd }); } catch {}
+  try {
+    // The server matches names ignoring case ("p" = "P"); use its spelling so the app agrees.
+    const r = await api('/api/ping', { method: 'POST', body: fd });
+    if (r && r.user && r.user !== me) { me = r.user; storeSet('he_user', me); }
+  } catch {}
   if ((await locPermission()) !== 'denied') startTracking();
   $('locBanner').classList.toggle('hidden', !!myLocation);
 }
@@ -609,6 +613,28 @@ function openSheet(html) {
   $('sheetBody').innerHTML = html;
   $('sheetBackdrop').classList.remove('hidden');
   requestAnimationFrame(() => $('sheet').classList.add('open'));
+  startAfterCountdown();
+}
+
+// Solo cleanups (cleaning your own spot) need SOLO_MIN_SECONDS between starting and the after
+// photo. Show a countdown on the button instead of letting people hit an error.
+const SOLO_MIN_SECONDS = 60;
+let afterTimer = null;
+function startAfterCountdown() {
+  clearInterval(afterTimer);
+  const tick = () => {
+    const btn = document.querySelector('.after-btn');
+    if (!btn) return clearInterval(afterTimer);
+    const left = Math.ceil((Number(btn.dataset.unlock) - Date.now()) / 1000);
+    const locked = left > 0;
+    btn.classList.toggle('opacity-50', locked);
+    btn.classList.toggle('pointer-events-none', locked);
+    btn.querySelector('.after-label').textContent = locked
+      ? `⏳ Keep cleaning: after photo in ${left} s` : '📸 Upload after photo';
+    if (!locked) clearInterval(afterTimer);
+  };
+  tick();
+  afterTimer = setInterval(tick, 1000);
 }
 function closeSheet() {
   $('sheet').classList.remove('open');
@@ -686,8 +712,8 @@ function openSpot(id) {
       <a href="https://www.google.com/maps/dir/?api=1&destination=${s.lat},${s.lng}" target="_blank" rel="noopener"
          class="mt-5 block text-center w-full rounded-2xl bg-slate-100 font-bold py-3.5">🧭 Directions</a>
       ${s.task_before_photo ? `<div class="mt-3"><div class="text-xs font-bold text-slate-500 mb-1">TASK BEFORE PHOTO ✓</div><img src="${esc(s.task_before_photo)}" class="rounded-xl aspect-video object-cover w-full" alt="Before cleanup"></div>` : camBtn('📷 Take task BEFORE photo to start', 'bg-amber-400 text-amber-950', `startTask('${s.id}', this)`)}
-      ${s.task_before_photo ? `<label class="mt-2 block text-center w-full rounded-2xl bg-forest-500 text-white font-extrabold py-4 text-lg shadow-lg cursor-pointer active:scale-[.98] transition">
-        📸 Upload after photo
+      ${s.task_before_photo ? `<label data-unlock="${s.self_clean ? Math.round((s.claimed_at + SOLO_MIN_SECONDS) * 1000) : 0}" class="after-btn mt-2 block text-center w-full rounded-2xl bg-forest-500 text-white font-extrabold py-4 text-lg shadow-lg cursor-pointer active:scale-[.98] transition">
+        <span class="after-label">📸 Upload after photo</span>
         <input type="file" accept="image/*" capture="environment" class="hidden" onchange="submitClean('${s.id}', this)">
       </label>` : ''}
       <p class="text-xs text-center text-slate-500 mt-2">${s.self_clean

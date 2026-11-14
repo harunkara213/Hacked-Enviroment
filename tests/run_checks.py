@@ -28,6 +28,7 @@ import app as A  # noqa: E402
 c = TestClient(A.app)
 HERE = {"lat": "53.5232", "lng": "-113.5263"}
 FAILED = []
+random.seed(2026)  # reproducible test photos
 
 
 def ok(cond, msg):
@@ -112,7 +113,7 @@ c.post(f"/api/spots/{s}/claim", data={"user": "bob"})
 ok(post(f"/api/spots/{s}/start", files=img(same), user="bob").status_code == 200, "before photo accepted")
 ok(post(f"/api/spots/{s}/clean", files=img(same), user="bob").status_code == 409, "same photo as before and after is refused")
 reenc = io.BytesIO()
-Image.open(io.BytesIO(same)).resize((160, 120)).save(reenc, "JPEG", quality=60)
+Image.open(io.BytesIO(same)).resize((240, 180)).save(reenc, "JPEG", quality=75)
 ok(post(f"/api/spots/{s}/clean", files=img(reenc.getvalue()), user="bob").status_code == 409, "re-saved/shrunk copy is also refused")
 after = new_photo()
 x = post(f"/api/spots/{s}/clean", files=img(after), user="bob").json()
@@ -228,6 +229,21 @@ c.post(f"/api/spots/{g}/claim", data={"user": "bob"})
 ok(post(f"/api/spots/{g}/start", files=img(), user="bob", accuracy_m="400").status_code == 422, "imprecise GPS (±400 m) refused")
 ok(post(f"/api/spots/{g}/start", files=img(), user="bob", accuracy_m="15").status_code == 200, "precise GPS (±15 m) accepted")
 ok(c.get("/api/status").json()["max_location_accuracy_m"] == A.MAX_ACTION_LOCATION_ACCURACY_M, "status tells the app the GPS limit")
+
+print("== names ignore case")
+cs = report("Casey", self_clean="true").json()["spot"]
+A.SELF_CLEAN_MIN_SECONDS = 0
+x = post(f"/api/spots/{cs['id']}/clean", files=img(), user="Casey").json()
+ok(x["verifier"] is not None and x["verifier"].lower() != "casey", "verifier is never the cleaner under another case")
+ok(post(f"/api/spots/{cs['id']}/verify", files=img(), user="casey", verdict="clean").status_code == 403, "'casey' can't verify 'Casey's cleanup")
+ok(c.post("/api/ping", data={"user": "  CASEY "}).json()["user"] == "Casey", "names are matched ignoring case and spaces")
+own = report("Dana").json()["spot"]
+r = c.post(f"/api/spots/{own['id']}/claim", data={"user": "dana"}).json()
+ok(r["self_clean"] == 1, "claiming your own report under another case still counts as solo")
+A.SELF_CLEAN_MIN_SECONDS = 60
+w = report("Eli", self_clean="true").json()["spot"]
+r = post(f"/api/spots/{w['id']}/clean", files=img(), user="Eli")
+ok(r.status_code == 409 and " s." in r.json()["detail"], "too-early after photo says how many seconds are left")
 
 print(f"\n{'ALL PASSED' if not FAILED else f'{len(FAILED)} FAILED'}")
 sys.exit(1 if FAILED else 0)

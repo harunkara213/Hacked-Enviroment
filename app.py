@@ -145,10 +145,17 @@ init_db()
 # ---------- helpers ----------
 
 def clean_name(name: str) -> str:
-    name = (name or "").strip()[:24]
+    """Trim the name and match it to an existing user ignoring case, so "p", "P" and " P " are one
+    person. Otherwise someone could report as "P" and verify their own cleanup as "p"."""
+    name = " ".join((name or "").split())[:24]
     if not name:
         raise HTTPException(400, "Pick a username first.")
-    return name
+    with closing(db()) as c:
+        r = c.execute("""SELECT name FROM users WHERE LOWER(name)=LOWER(?)
+                         UNION ALL SELECT user FROM events WHERE LOWER(user)=LOWER(?)
+                         UNION ALL SELECT reporter FROM spots WHERE LOWER(reporter)=LOWER(?)
+                         LIMIT 1""", (name, name, name)).fetchone()
+    return r[0] if r else name
 
 
 def distance_m(lat1, lng1, lat2, lng2) -> float:
@@ -450,7 +457,7 @@ def ping(user: str = Form(...), lat: float | None = Form(None), lng: float | Non
                       (user, None, None, time.time()))
         else:
             seen(c, user, lat, lng)
-    return {"ok": True}
+    return {"ok": True, "user": user}  # the app adopts this spelling, see clean_name
 
 
 @app.get("/api/spots")
@@ -619,8 +626,10 @@ async def clean_spot(
     if s["status"] != "claimed" or s["claimed_by"] != user:
         raise HTTPException(409, "Claim this spot first.")
     require_on_site(s, lat, lng, "after photo", accuracy_m)
-    if s["self_clean"] and time.time() - (s["claimed_at"] or 0) < SELF_CLEAN_MIN_SECONDS:
-        raise HTTPException(409, "That was fast! Finish cleaning, then take the after photo.")
+    wait = SELF_CLEAN_MIN_SECONDS - (time.time() - (s["claimed_at"] or 0))
+    if s["self_clean"] and wait > 0:
+        raise HTTPException(409, f"Cleaning your own spot needs at least {SELF_CLEAN_MIN_SECONDS} seconds. "
+                                 f"Upload the after photo in {int(wait) + 1} s.")
 
     if not s["task_before_photo"]:
         raise HTTPException(409, "Take a before photo to start this cleanup first.")
