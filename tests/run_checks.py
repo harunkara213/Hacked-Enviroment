@@ -258,8 +258,12 @@ ok(rj and rj[0]["reason"] == "This photo is not new." and rj[0]["device"].starts
 print("== demo people on Ranks")
 lb = {r["user"]: r for r in c.get("/api/leaderboard").json()}
 ok(all(lb[n]["donatable"] for n in ("Sofia", "Aylin", "Marcus")), "Sofia, Aylin, Marcus can receive donations")
-ok(lb["Jin"]["donation_locked"] and lb["Priya"]["donation_locked"], "Jin (still-dirty flag) and Priya (complaints) are locked")
-ok(not lb["Noah"]["donatable"] and not lb["Noah"]["donation_locked"], "Noah is not there yet")
+locked = lambda n: c.get(f"/api/users/{n}").json()["donations"]["locked"]
+ok(locked("Jin") and locked("Priya"), "Jin (still-dirty flag) and Priya (complaints) are locked")
+ok(not lb["Noah"]["donatable"] and not locked("Noah"), "Noah is not there yet")
+ok("donation_locked" not in lb["Jin"] and not lb["Jin"]["donatable"], "Ranks only says who is verified, not who is locked")
+pd = c.get("/api/users/Priya").json()["donations"]
+ok("complaints" not in pd and not any("omplaint" in r["label"] for r in pd["rules"]), "complaints are never shown to users")
 ok(not any(s["id"].startswith("demohist-") for s in c.get("/api/spots").json()), "demo people's past cleanups stay off the map")
 A.seed_demo()
 ok(c.get("/api/users/Sofia").json()["cleanups"] == 12, "restart doesn't duplicate demo people")

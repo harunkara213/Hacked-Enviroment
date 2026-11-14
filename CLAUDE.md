@@ -40,7 +40,10 @@ Live: https://hacker-environment.onrender.com. **Every push to `main` deploys to
   setting for this; the app reads it from `/api/status`. Raise it if GPS is weak indoors at a demo.
 - Cleaning your own report or "I'll clean it myself" = solo cleanup: half points, report bonus
   taken back, max 3 a day, 60 s minimum, never counts toward donations.
-- Any strike ("still dirty" flag) or 2+ complaints locks donations for good. Donations: $1-20, $50/month cap, 7-day hold, go to a person, not a cleanup.
+- Any strike ("still dirty" flag) or 2+ complaints locks donations for good. Complaints are INTERNAL:
+  no "report user" button, never shown in the app or API (`public_donation_status` strips them), filed only
+  through `/api/users/{name}/complain` by the team. Publicly, only "💛 Verified · donations on" is shown;
+  nobody else's donation status (locked or not) is visible to other users. Donations: $1-20, $50/month cap, 7-day hold, go to a person, not a cleanup.
 - **Photos must be new**: the app rejects gallery uploads, photos older than 10 minutes, PNG
   screenshots and files whose metadata says AI-generated/AI-edited (IPTC/C2PA digital source type
   "trainedAlgorithmicMedia", case-insensitive) or edited (Photoshop...). A C2PA label by itself is

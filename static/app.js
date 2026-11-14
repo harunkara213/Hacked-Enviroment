@@ -431,11 +431,11 @@ function donationRules(d) {
 }
 
 function donationCard(d, mine) {
+  // Only "Verified · donations on" is shown publicly. Everyone else's status stays private.
+  if (!mine && !d.eligible) return '';
   if (d.locked) {
-    return `<div class="rounded-2xl bg-rose-50 p-4 text-sm text-rose-800">
-      <div class="font-extrabold">⛔ Donations locked</div>
-      <div class="mt-1">${mine ? 'Your account' : 'This account'} has a failed check, a fake photo or complaints from other users. Donations stay off for good so nobody can litter for money.</div>
-      ${d.refunded_cents ? `<div class="mt-1 font-semibold">${money(d.refunded_cents)} in held donations was refunded.</div>` : ''}
+    return `<div class="rounded-2xl bg-slate-100 p-4 text-sm text-slate-600">
+      <div class="font-extrabold">Donations aren't available for this account.</div>
     </div>`;
   }
   if (d.eligible) {
@@ -462,14 +462,6 @@ async function openUser(name) {
       ${[2, 5, 10].map((a) => `<button data-user="${esc(name)}" onclick="donateTo(this.dataset.user, ${a})" class="rounded-2xl bg-amber-400 text-amber-950 font-extrabold py-3 active:scale-95 transition">$${a}</button>`).join('')}
     </div>
     <p class="text-[11px] text-slate-500 mt-2 text-center">Held 7 days and refunded if any problem shows up. Demo: no real money moves yet.</p>` : '';
-  const report = !isMe ? `
-    <details class="mt-5">
-      <summary class="text-sm text-slate-500 underline cursor-pointer text-center">🚩 Report ${esc(name)}</summary>
-      <div class="mt-3 grid grid-cols-2 gap-2 text-sm font-semibold">
-        ${[['fake_photos', '📷 Fake photos'], ['littering', '🗑️ Seen littering'], ['fake_cleanup', '🧹 Fake cleanup'], ['other', '❓ Other']]
-          .map(([r, l]) => `<button data-user="${esc(name)}" onclick="reportUser(this.dataset.user, '${r}')" class="rounded-xl bg-slate-100 py-2.5">${l}</button>`).join('')}
-      </div>
-    </details>` : '';
   openSheet(`
     <div class="mx-auto w-10 h-1.5 rounded-full bg-slate-200 mb-4"></div>
     <div class="flex items-center gap-3">
@@ -485,8 +477,7 @@ async function openUser(name) {
       <div class="bg-slate-50 rounded-2xl py-2"><div class="text-lg font-extrabold">${p.bags}</div><div class="text-[11px] text-slate-500">bags</div></div>
     </div>
     <div class="mt-4">${donationCard(d, isMe)}</div>
-    ${donate}
-    ${report}`);
+    ${donate}`);
 }
 
 async function donateTo(name, amount) {
@@ -500,16 +491,6 @@ async function donateTo(name, amount) {
   } catch (e) { toast(e.message, 'err'); }
 }
 
-async function reportUser(name, reason) {
-  const fd = new FormData();
-  fd.append('user', me);
-  fd.append('reason', reason);
-  try {
-    await api(`/api/users/${encodeURIComponent(name)}/complain`, { method: 'POST', body: fd });
-    toast(`Thanks. We'll keep an eye on ${name}.`);
-    openUser(name);
-  } catch (e) { toast(e.message, 'err'); }
-}
 
 // ---------- user ----------
 function askName() { $('nameModal').classList.remove('hidden'); setTimeout(() => $('nameInput').focus(), 100); }
@@ -931,12 +912,10 @@ async function loadLeaders() {
       <div class="font-extrabold text-sm truncate max-w-full">${esc(r.user)}${r.donatable ? ' 💛' : ''}</div>
       <div class="text-forest-700 font-bold text-sm">${r.points} pts</div></div>`;
   }).join('');
-  // 💛 = verified volunteer who can receive donations; 🔒 = locked for good ("still dirty" flag or complaints)
+  // Only verified volunteers get a badge; nobody else's donation status is shown.
   const badge = (r) => r.donatable
     ? '<span class="ml-1.5 text-[10px] font-extrabold uppercase tracking-wide bg-amber-100 text-amber-800 rounded-full px-2 py-0.5">💛 Verified · donations on</span>'
-    : r.donation_locked
-      ? '<span class="ml-1.5 text-[10px] font-extrabold uppercase tracking-wide bg-rose-50 text-rose-700 rounded-full px-2 py-0.5">🔒 Donations locked</span>'
-      : '';
+    : '';
   $('leaderList').innerHTML = rows.length ? rows.map((r, i) => `
     <li data-user="${esc(r.user)}" onclick="openUser(this.dataset.user)" class="flex items-center gap-3 px-4 py-3 cursor-pointer ${r.user === me ? 'bg-forest-50' : ''}">
       <div class="w-7 text-center font-extrabold text-slate-400">${i + 1}</div>

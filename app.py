@@ -304,13 +304,23 @@ def donation_status(c, user) -> dict:
          "ok": days >= DON_MIN_DAYS},
         {"label": "No \"still dirty\" flags, ever", "have": t["strikes"], "need": 0,
          "ok": t["strikes"] == 0, "permanent": True},
-        {"label": "No complaints from other users", "have": complaints, "need": 0,
-         "ok": complaints <= DON_MAX_COMPLAINTS, "permanent": True},
+        # Internal rule: enforced, but never shown to users (complaints are handled internally).
+        {"label": "No complaints", "have": complaints, "need": 0,
+         "ok": complaints <= DON_MAX_COMPLAINTS, "permanent": True, "internal": True},
     ]
     locked = t["strikes"] > 0 or complaints > DON_MAX_COMPLAINTS
     return {"eligible": all(r["ok"] for r in rules), "locked": locked, "rules": rules,
             "complaints": complaints, "month_cents": month,
             "room_cents": max(0, DON_MONTHLY_CAP_CENTS - month)}
+
+
+def public_donation_status(don, sums) -> dict:
+    """What users may see: no complaint counts, no internal rules."""
+    out = {k: v for k, v in don.items() if k != "complaints"}
+    out["rules"] = [r for r in don["rules"] if not r.get("internal")]
+    out.update(held_cents=sums.get("held", 0), released_cents=sums.get("released", 0),
+               refunded_cents=sums.get("refunded", 0), monthly_cap_cents=DON_MONTHLY_CAP_CENTS)
+    return out
 
 
 def settle_donations(c, user):
@@ -886,7 +896,7 @@ def leaderboard():
         for r in rows:
             d = donation_status(c, r["user"])
             out.append({**dict(r), "level": level_for(r["points"])["title"],
-                        "donatable": d["eligible"], "donation_locked": d["locked"]})
+                        "donatable": d["eligible"]})
     return out
 
 
@@ -917,5 +927,4 @@ def profile(name: str):
     return {"user": name, **dict(r), "bags": bags, "rank": rank, "total_users": len(users),
             "level": level_for(r["points"]), "on_hold": on_hold, "to_verify": to_verify,
             "trusted": trust["trusted"], "strikes": trust["strikes"],
-            "donations": {**don, "held_cents": sums.get("held", 0), "released_cents": sums.get("released", 0),
-                          "refunded_cents": sums.get("refunded", 0), "monthly_cap_cents": DON_MONTHLY_CAP_CENTS}}
+            "donations": public_donation_status(don, sums)}

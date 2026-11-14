@@ -32,7 +32,7 @@ Built at HackED Beta 2026.
 
 ### Photo authenticity: what's next when we grow
 No method proves a photo is real with 100% certainty, so the app stacks checks and keeps a human in the loop
-("still dirty" flags, complaints). With funding we'd add:
+("still dirty" flags, internal review). With funding we'd add:
 - An in-app camera with signed captures (iOS App Attest / Android Play Integrity) so photos can only come
   from the real camera of a real device.
 - A dedicated AI-image detector API (e.g. Hive, Sightengine, Reality Defender) plus Google SynthID detection.
@@ -51,7 +51,8 @@ The Tasks tab lists open spots sorted by **nearest** or **most points**, plus th
 ### Donations (only for proven, trusted volunteers)
 People can tip a volunteer, but the rules are built so littering for money never pays:
 - **Unlock only after:** 10 approved cleanups of other people's reports (solo cleanups don't count), on spots reported by 5+ different people, and an account at least 14 days old.
-- **Locked for good** after any "still dirty" flag, or complaints from 2+ different users. Brand-new accounts can't file complaints.
+- **Locked for good** after any "still dirty" flag, or after complaints reviewed internally by the team (complaints are never shown in the app).
+- Publicly, only **"💛 Verified · donations on"** is shown. Nobody else's donation status is visible to other users.
 - Donations go to the **person, not a specific cleanup**, so there's no per-spot payout to farm.
 - **$1–$20 per donation, max $50 per month** per volunteer.
 - Every donation is **held 7 days** and refunded automatically if the volunteer gets locked during that time.
