@@ -83,6 +83,7 @@ SPOT_EXTRA_COLUMNS = {
     "verify_photo": "TEXT", "verify_note": "TEXT",
     "task_before_photo": "TEXT",
     "self_clean": "INTEGER",
+    "seeded": "INTEGER",
 }
 
 
@@ -324,6 +325,48 @@ def level_for(points: int) -> dict:
     return {"title": title, "floor": floor, "next": nxt}
 
 
+# ---------- demo data ----------
+# A few park spots around U of A so the map isn't empty at the demo. Added once when
+# SEED_DEMO=1 (never re-added after someone cleans or deletes them). Scores are set
+# by hand: these are downloaded photos, which the AI's fake-photo check would reject.
+DEMO_SPOTS = [
+    {"id": "demo-emily-murphy", "lat": 53.5297, "lng": -113.5355, "file": "park-lawn-picnic.jpg",
+     "reporter": "Ava", "difficulty": 3, "bags": 4, "minutes": 60, "hours_ago": 5,
+     "hazards": ["Broken glass possible"],
+     "summary": "Picnic litter scattered across the lawn: bags, bottles, cans and food wrappers."},
+    {"id": "demo-windsor-playground", "lat": 53.5262, "lng": -113.5322, "file": "playground-benches.jpg",
+     "reporter": "Leo", "difficulty": 1, "bags": 1, "minutes": 15, "hours_ago": 2,
+     "hazards": [],
+     "summary": "Spilled food, napkins and paper around the playground benches."},
+    {"id": "demo-hawrelak-field", "lat": 53.5279, "lng": -113.5466, "file": "field-dump.jpg",
+     "reporter": "Mia", "difficulty": 5, "bags": 10, "minutes": 180, "hours_ago": 20,
+     "hazards": ["Sharp debris", "Heavy items"],
+     "summary": "Large dump in the open field: plastic, paper and household waste spread over a wide area."},
+]
+
+
+def seed_demo():
+    if os.getenv("SEED_DEMO") != "1":
+        return
+    with closing(db()) as c, c:
+        for d in DEMO_SPOTS:
+            if c.execute("SELECT 1 FROM spots WHERE id=?", (d["id"],)).fetchone():
+                continue
+            if c.execute("SELECT 1 FROM events WHERE spot_id=? AND kind='seed_removed'", (d["id"],)).fetchone():
+                continue  # deleted on purpose: don't bring it back
+            name = save_photo((BASE / "static" / "demo" / d["file"]).read_bytes(), "image/jpeg", c=c)
+            c.execute("""INSERT INTO spots (id, lat, lng, reporter, photos, difficulty, bags, minutes,
+                         hazards, summary, points, ai_source, created_at, seeded)
+                         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,1)""",
+                      (d["id"], d["lat"], d["lng"], d["reporter"], json.dumps([name]), d["difficulty"],
+                       d["bags"], d["minutes"], json.dumps(d["hazards"]), d["summary"],
+                       ai.points_for(d["difficulty"], d["bags"]), "demo-seed",
+                       time.time() - d["hours_ago"] * 3600))
+
+
+seed_demo()
+
+
 # ---------- app ----------
 
 app = FastAPI(title="Hacker Environment")
@@ -437,6 +480,29 @@ def check_solo_limit(c, user):
     if n >= SELF_CLEAN_DAILY_LIMIT:
         raise HTTPException(429, f"You can clean {SELF_CLEAN_DAILY_LIMIT} of your own spots a day. "
                                  "Leave this one for another volunteer.")
+
+
+@app.post("/api/spots/{spot_id}/delete")
+def delete_spot(spot_id: str, user: str = Form(...)):
+    """The reporter can take back a report while nobody is working on it. The +5 report bonus goes back too."""
+    user = clean_name(user)
+    with closing(db()) as c, c:
+        s = get_spot(c, spot_id)
+        if s["reporter"] != user:
+            raise HTTPException(403, "Only the person who reported this spot can delete it.")
+        if s["status"] != "open":
+            raise HTTPException(409, "Someone is already cleaning or checking this spot, so it can't be deleted.")
+        bonus = c.execute("""SELECT COALESCE(SUM(points),0) FROM events WHERE "user"=? AND spot_id=?
+                             AND kind IN ('report','bonus_back')""", (user, spot_id)).fetchone()[0]
+        if bonus > 0:
+            award(c, user, -bonus, "bonus_back", spot_id)
+        if s["seeded"]:
+            c.execute("INSERT INTO events VALUES (?,?,?,?,?)", (user, "seed_removed", 0, spot_id, time.time()))
+        names = json.loads(s["photos"]) + [n for n in (s["task_before_photo"], s["verify_photo"]) if n]
+        for n in names:
+            c.execute("DELETE FROM photos WHERE name=?", (n,))
+        c.execute("DELETE FROM spots WHERE id=?", (spot_id,))
+    return {"ok": True}
 
 
 @app.post("/api/spots/{spot_id}/claim")

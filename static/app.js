@@ -601,7 +601,8 @@ function openSpot(id) {
     const pts = own ? Math.round(s.points / 2) : s.points;  // cleaning your own report = solo cleanup, half points
     action = `<button onclick="claim('${s.id}')" class="mt-5 w-full rounded-2xl bg-forest-500 text-white font-extrabold py-4 text-lg shadow-lg active:scale-[.98] transition">${label} · +${pts} pts</button><p class="text-xs text-center text-slate-500 mt-2">${own
       ? 'Cleaning your own report counts as a solo cleanup: half points, the +5 report bonus goes back, max 3 a day, and another volunteer checks it.'
-      : 'Take a before photo to start, then upload an after photo when you finish. Another volunteer checks your cleanup.'}</p>`;
+      : 'Take a before photo to start, then upload an after photo when you finish. Another volunteer checks your cleanup.'}</p>`
+      + (own ? `<button onclick="deleteSpot('${s.id}', this)" class="mt-3 w-full rounded-2xl border-2 border-rose-200 text-rose-600 font-bold py-3 active:scale-[.98] transition">🗑️ Delete my report</button>` : '');
   }
 
   openSheet(`
@@ -680,6 +681,26 @@ async function submitFlag(id, input) {
   if (!r) return;
   toast(`Thanks! Spot is back on the map${r.reward ? ` · +${r.reward} pts` : ''}`);
   openSpot(id);
+}
+
+// Two taps to delete, so a slip of the thumb doesn't remove a report.
+async function deleteSpot(id, btn) {
+  if (!btn.dataset.armed) {
+    btn.dataset.armed = '1';
+    btn.textContent = 'Tap again to delete (your +5 goes back)';
+    btn.classList.add('bg-rose-50');
+    setTimeout(() => { if (btn.isConnected) { delete btn.dataset.armed; btn.textContent = '🗑️ Delete my report'; btn.classList.remove('bg-rose-50'); } }, 4000);
+    return;
+  }
+  const fd = new FormData();
+  fd.append('user', me);
+  try {
+    await api(`/api/spots/${id}/delete`, { method: 'POST', body: fd });
+    closeSheet();
+    toast('Report deleted.');
+    await loadSpots();
+    refreshPoints();
+  } catch (e) { toast(e.message, 'err'); }
 }
 
 async function claim(id) {

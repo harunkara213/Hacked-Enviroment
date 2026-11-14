@@ -10,6 +10,8 @@ services:
         sync: false
       - key: DONATION_DEMO
         value: "1"
+      - key: SEED_DEMO
+        value: "1"
       - key: PYTHON_VERSION
         value: 3.13.5
       # The web server's disk is wiped on every deploy/sleep, so all data lives in Postgres.
