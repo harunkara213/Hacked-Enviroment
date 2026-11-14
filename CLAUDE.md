@@ -1,9 +1,9 @@
-# Hacker Environment: guide for AI coding agents (Claude, Codex) and teammates
+# Legacy Earth: guide for AI coding agents (Claude, Codex) and teammates
 
 Litter cleanup app for HackED Beta 2026. Users report dirty spots with photos, volunteers clean
 them, and the AI checks the before/after photos and pays the points. Anyone can flag a
 "cleaned" spot that's still dirty, which takes the points back.
-Live: https://hacker-environment.onrender.com. **Every push to `main` deploys to the live site.**
+Live: https://hacker-environment.onrender.com (URL, repo and Render service keep the old name on purpose). **Every push to `main` deploys to the live site.**
 
 ## Workflow rules
 - **Never push to `main` directly.** Start from the latest main (`git checkout main && git pull`),

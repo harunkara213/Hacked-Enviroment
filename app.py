@@ -1,4 +1,4 @@
-"""Hacker Environment - report litter, clean it up, earn points.
+"""Legacy Earth - report litter, clean it up, earn points.
 
 Flow: report -> claim -> before photo at the spot -> after photo -> the AI compares them and
 the points are paid. Anyone can later flag "still dirty" (photo at the spot) to reopen it.
@@ -564,7 +564,7 @@ with closing(db()) as _c, _c:
 
 # ---------- app ----------
 
-app = FastAPI(title="Hacker Environment")
+app = FastAPI(title="Legacy Earth")
 app.mount("/static", StaticFiles(directory=BASE / "static"), name="static")
 
 
