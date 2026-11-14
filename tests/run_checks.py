@@ -217,7 +217,7 @@ print("== demo spots, delete, give up")
 ids = {s["id"] for s in c.get("/api/spots").json()}
 ok({"demo-emily-murphy", "demo-windsor-playground", "demo-hawrelak-field"} <= ids, "3 demo park spots seeded")
 A.seed_demo()
-ok(len([s for s in c.get("/api/spots").json() if s["id"].startswith("demo-")]) == 3, "restart doesn't duplicate demo spots")
+ok(len([s for s in c.get("/api/spots").json() if s["id"].startswith("demo-")]) == len(A.DEMO_SPOTS), "restart doesn't duplicate demo spots")
 ok(c.post("/api/spots/demo-windsor-playground/delete", data={"user": "Mallory"}).status_code == 403, "others can't delete a report")
 ok(c.post("/api/spots/demo-windsor-playground/delete", data={"user": "Leo"}).status_code == 200, "reporter deletes their report")
 A.seed_demo()

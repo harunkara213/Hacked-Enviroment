@@ -5,6 +5,7 @@ person checks it in person -> points paid. Anyone can later flag "still dirty".
 
 Run:  .venv/bin/uvicorn app:app --reload --host 0.0.0.0 --port 8000
 """
+import io
 import json
 import math
 import os
@@ -358,6 +359,75 @@ DEMO_SPOTS = [
      "summary": "Large dump in the open field: plastic, paper and household waste spread over a wide area."},
 ]
 
+# More demo spots around Edmonton's parks and river valley. Photos are crops / mirror images of
+# the demo photos ("crop" = left, top, right, bottom as fractions) so each spot looks different.
+_R, _F, _L, _P = "roadside-dump.jpg", "field-dump.jpg", "park-lawn-picnic.jpg", "playground-benches.jpg"
+DEMO_SPOTS += [
+    dict(id="demo-kinsmen-trail", lat=53.5226, lng=-113.5098, file=_R, crop=(0, .35, .6, 1), reporter="Omar",
+         difficulty=4, bags=8, minutes=150, hours_ago=3, hazards=["Broken glass possible"],
+         summary="Plastic bags and food packaging piled along the trail edge by Kinsmen Park."),
+    dict(id="demo-queen-elizabeth", lat=53.5287, lng=-113.4975, file=_L, crop=(.2, .3, 1, 1), reporter="Lina",
+         difficulty=2, bags=2, minutes=35, hours_ago=6, hazards=[],
+         summary="Leftover picnic wrappers and bottles scattered on the grass."),
+    dict(id="demo-louise-mckinney", lat=53.5398, lng=-113.4841, file=_R, crop=(.4, .4, 1, 1), flip=True,
+         reporter="Ava", difficulty=3, bags=5, minutes=90, hours_ago=9, hazards=["Wet waste"],
+         summary="Food waste and bags dumped near the riverfront path."),
+    dict(id="demo-victoria-park", lat=53.5352, lng=-113.5268, file=_F, crop=(0, .35, .7, 1), reporter="Leo",
+         difficulty=4, bags=7, minutes=120, hours_ago=12, hazards=["Sharp debris"],
+         summary="Paper, plastic and household rubbish spread across the open field."),
+    dict(id="demo-mill-creek", lat=53.5190, lng=-113.4790, file=_R, crop=(.15, .3, .85, .95), reporter="Mia",
+         difficulty=5, bags=12, minutes=200, hours_ago=26, hazards=["Sharp debris", "Heavy items"],
+         summary="Large illegal dump at the ravine edge: bags, packaging and bulky items."),
+    dict(id="demo-gallagher-park", lat=53.5321, lng=-113.4706, file=_L, crop=(0, .25, .75, 1), flip=True,
+         reporter="Omar", difficulty=2, bags=3, minutes=40, hours_ago=4, hazards=[],
+         summary="Party leftovers on the hill: cans, cups and snack bags."),
+    dict(id="demo-laurier-park", lat=53.5182, lng=-113.5558, file=_P, crop=(0, .2, .8, 1), reporter="Lina",
+         difficulty=1, bags=1, minutes=15, hours_ago=1, hazards=[],
+         summary="Napkins and food scraps around the picnic benches."),
+    dict(id="demo-buena-vista", lat=53.5236, lng=-113.5592, file=_F, crop=(.3, .4, 1, 1), flip=True,
+         reporter="Ava", difficulty=3, bags=4, minutes=75, hours_ago=15, hazards=["Wet waste"],
+         summary="Scattered plastic and paper in the off-leash area."),
+    dict(id="demo-groat-ravine", lat=53.5372, lng=-113.5471, file=_R, crop=(0, .5, .5, 1), flip=True,
+         reporter="Leo", difficulty=3, bags=4, minutes=70, hours_ago=7, hazards=["Steep slope"],
+         summary="Bags of rubbish thrown down the ravine slope."),
+    dict(id="demo-terwillegar", lat=53.4790, lng=-113.5882, file=_L, crop=(.1, .45, .9, 1), reporter="Mia",
+         difficulty=2, bags=2, minutes=30, hours_ago=20, hazards=[],
+         summary="Drink bottles and wrappers left near the trailhead parking."),
+    dict(id="demo-whitemud-park", lat=53.4931, lng=-113.5481, file=_F, crop=(.1, .3, .9, .9), reporter="Omar",
+         difficulty=4, bags=6, minutes=110, hours_ago=30, hazards=["Sharp debris"],
+         summary="Dumped household waste in the grass by the creek."),
+    dict(id="demo-fort-edmonton", lat=53.4992, lng=-113.5809, file=_R, crop=(.5, .35, 1, .95), reporter="Lina",
+         difficulty=3, bags=5, minutes=85, hours_ago=40, hazards=[],
+         summary="Plastic and food packaging along the footbridge path."),
+    dict(id="demo-ezio-faraone", lat=53.5318, lng=-113.5112, file=_P, crop=(.2, .3, 1, 1), flip=True,
+         reporter="Ava", difficulty=1, bags=1, minutes=10, hours_ago=2, hazards=[],
+         summary="A few cups and napkins left on the lookout benches."),
+    dict(id="demo-dawson-park", lat=53.5459, lng=-113.4621, file=_L, crop=(.3, .2, 1, .9), reporter="Leo",
+         difficulty=2, bags=3, minutes=45, hours_ago=11, hazards=[],
+         summary="Food wrappers, bottles and a plastic bag on the river flats."),
+    dict(id="demo-rundle-park", lat=53.5452, lng=-113.3905, file=_R, crop=(0, .25, 1, 1), flip=True,
+         reporter="Mia", difficulty=5, bags=10, minutes=180, hours_ago=48, hazards=["Heavy items", "Wet waste"],
+         summary="Wide area of dumped rubbish along the back fence of the park."),
+]
+
+
+def demo_photo(d) -> bytes:
+    """Demo photo bytes, cropped / mirrored if the spot says so."""
+    data = (BASE / "static" / "demo" / d["file"]).read_bytes()
+    if not d.get("crop") and not d.get("flip"):
+        return data
+    from PIL import Image, ImageOps
+    im = Image.open(io.BytesIO(data)).convert("RGB")
+    if d.get("crop"):
+        w, h = im.size
+        l, t, r, b = d["crop"]
+        im = im.crop((int(l * w), int(t * h), int(r * w), int(b * h)))
+    if d.get("flip"):
+        im = ImageOps.mirror(im)
+    out = io.BytesIO()
+    im.save(out, "JPEG", quality=85)
+    return out.getvalue()
+
 
 def seed_demo():
     if os.getenv("SEED_DEMO") != "1":
@@ -368,7 +438,7 @@ def seed_demo():
                 continue
             if c.execute("SELECT 1 FROM events WHERE spot_id=? AND kind='seed_removed'", (d["id"],)).fetchone():
                 continue  # deleted on purpose: don't bring it back
-            name = save_photo((BASE / "static" / "demo" / d["file"]).read_bytes(), "image/jpeg", c=c)
+            name = save_photo(demo_photo(d), "image/jpeg", c=c)
             c.execute("""INSERT INTO spots (id, lat, lng, reporter, photos, difficulty, bags, minutes,
                          hazards, summary, points, ai_source, created_at, seeded)
                          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,1)""",
