@@ -7,6 +7,7 @@ let me = storeGet('he_user');
 let spots = [];
 let map, markersLayer, meMarker;
 let myLocation = null;
+let aiStatus = null;
 let pending = []; // compressed photo blobs for a new report
 
 // ---------- tiny utils ----------
@@ -781,9 +782,12 @@ async function submitReport(selfClean = false) {
     go('map');
     map.setView([r.spot.lat, r.spot.lng], 17);
     openSpot(r.spot.id);
+    const analysisNote = r.spot.ai_source === 'gemini'
+      ? 'Gemini analyzed the photo.'
+      : 'AI is unavailable; a demo score was used instead.';
     toast(selfClean
-      ? `Solo cleanup started · ${r.spot.points} pts. Clean it, then upload the after photo.`
-      : `Posted! Worth ${r.spot.points} pts to a volunteer (+${r.report_bonus} for you). You can also clean it yourself for half points.`);
+      ? `Solo cleanup started · ${r.spot.points} pts. ${analysisNote} Clean it, then upload the after photo.`
+      : `Posted! ${analysisNote} Worth ${r.spot.points} pts to a volunteer (+${r.report_bonus} for you). You can also clean it yourself for half points.`);
   } catch (e) { hideLoading(); toast(e.message, 'err'); }
 }
 
@@ -916,7 +920,12 @@ async function boot() {
   if (!me) askName(); else { refreshPoints(); checkLocationAccess(); }
   $('nameInput').addEventListener('keydown', (e) => { if (e.key === 'Enter') saveName(); });
   api('/api/status').then((s) => {
-    $('aiBadge').textContent = s.ai === 'gemini' ? 'AI online · Gemini' : 'Demo mode (no AI key)';
+    aiStatus = s;
+    $('aiBadge').textContent = s.ai === 'gemini' ? `AI online · ${s.model}` : 'AI unavailable · demo scoring';
+    $('aiBadge').title = s.ai === 'gemini' ? '' : (s.last_error || 'Configure GEMINI_API_KEY to enable photo analysis.');
+    $('aiBadge').onclick = () => {
+      if (aiStatus?.ai !== 'gemini') toast(aiStatus?.last_error || 'Configure GEMINI_API_KEY to enable photo analysis.', 'err');
+    };
   }).catch(() => {});
   await loadSpots();
   setInterval(loadSpots, 20000);

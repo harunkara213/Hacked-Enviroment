@@ -11,22 +11,28 @@ from pydantic import BaseModel, Field
 MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
 
 _client = None
+LAST_ERROR = None  # exposed by /api/status so setup and API failures are visible
 
 
 def _get_client():
     global _client
     key = os.getenv("GEMINI_API_KEY")
     if not key:
+        global LAST_ERROR
+        LAST_ERROR = "GEMINI_API_KEY is not configured. Add it to the service environment to enable photo analysis."
         return None
     if _client is None:
-        from google import genai
-        from google.genai import types
-        # JSON mode (response_schema) is only available on v1beta.
-        _client = genai.Client(api_key=key, http_options=types.HttpOptions(api_version="v1beta"))
+        try:
+            from google import genai
+            from google.genai import types
+            # JSON mode (response_schema) is only available on v1beta.
+            _client = genai.Client(api_key=key, http_options=types.HttpOptions(api_version="v1beta"))
+            LAST_ERROR = None
+        except Exception as e:
+            LAST_ERROR = f"Gemini setup failed: {e!r}"[:300]
+            print(f"[ai] Gemini client setup failed: {e!r}")
+            return None
     return _client
-
-
-LAST_ERROR = None  # shown on /api/status so silent fallbacks are visible
 
 
 # ---------- schemas ----------
@@ -105,14 +111,16 @@ def _seed(images) -> int:
 
 def assess_spot(images: list[tuple[bytes, str]]) -> dict:
     """images: list of (bytes, mime). Returns dict with assessment + points + source."""
-    if _get_client():
+    client = _get_client()
+    if client:
         try:
             a = _generate(_parts(images) + [ASSESS_PROMPT], Assessment)
+            global LAST_ERROR
+            LAST_ERROR = None
             a.difficulty = max(1, min(5, a.difficulty))
             a.estimated_bags = max(0, a.estimated_bags)
             return {**a.model_dump(), "points": points_for(a.difficulty, a.estimated_bags), "source": "gemini"}
         except Exception as e:  # network, quota, billing... keep the demo alive
-            global LAST_ERROR
             LAST_ERROR = repr(e)[:300]
             print(f"[ai] assess failed, using demo mode: {e!r}")
     s = _seed(images)
@@ -132,13 +140,15 @@ def assess_spot(images: list[tuple[bytes, str]]) -> dict:
 
 
 def verify_cleanup(before: list[tuple[bytes, str]], after: tuple[bytes, str]) -> dict:
-    if _get_client():
+    client = _get_client()
+    if client:
         try:
             v = _generate(_parts(before) + _parts([after]) + [VERIFY_PROMPT], Verification)
+            global LAST_ERROR
+            LAST_ERROR = None
             v.percent_cleaned = max(0, min(100, v.percent_cleaned))
             return {**v.model_dump(), "source": "gemini"}
         except Exception as e:
-            global LAST_ERROR
             LAST_ERROR = repr(e)[:300]
             print(f"[ai] verify failed, using demo mode: {e!r}")
     return {"same_place": True, "percent_cleaned": 100, "looks_fake": False,
