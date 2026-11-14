@@ -275,8 +275,8 @@ function fmtDist(d) {
 // ---------- photo origin checks (before compressing, which strips metadata) ----------
 // Not proof on their own (a determined cheater can work around client checks), but they stop
 // the easy routes: old gallery photos, screenshots, and files that carry an AI-generator or
-// editing-app signature. The server adds duplicate detection and the AI fake check, and a
-// random nearby person still has to confirm cleanups in person.
+// editing-app signature. The server adds duplicate detection (photo fingerprints), and anyone
+// passing by can flag a "cleaned" spot that's still dirty.
 const MAX_PHOTO_AGE_MS = 10 * 60 * 1000;
 // Note: many phones (Google Pixel, newer Samsung Galaxy and iPhone models) attach Content
 // Credentials (C2PA) to EVERY normal camera photo, so a C2PA label alone is not suspicious.
@@ -398,14 +398,13 @@ async function loadTasks() {
   const dist = (s) => map.distance([from.lat, from.lng], [s.lat, s.lng]);
   const fmt = (m) => (myLocation ? fmtDist(Math.round(m)) : `${(m / 1000).toFixed(1)} km`).replace(' away', '');
   const list = spots
-    .filter((s) => s.status === 'open' || (s.status === 'claimed' && s.claimed_by === me) || canVerify(s))
+    .filter((s) => s.status === 'open' || (s.status === 'claimed' && s.claimed_by === me))
     .map((s) => ({ ...s, d: dist(s) }))
     .sort((a, b) => (sortMode === 'near' ? a.d - b.d : b.points - a.points || a.d - b.d));
   $('tasksSub').textContent = !myLocation ? 'Location off: distances are from the map center.'
     : `${list.length} spot${list.length === 1 ? '' : 's'} waiting for you${myLocation.acc > 100 ? ` · weak GPS (±${myLocation.acc} m)` : ''}.`;
   $('taskList').innerHTML = list.length ? list.map((s, i) => {
-    const tag = canVerify(s) ? '<span class="text-indigo-600">🔍 Check · +10</span>'
-      : s.claimed_by === me ? '<span class="text-amber-600">⏳ Yours: go clean</span>'
+    const tag = s.claimed_by === me ? '<span class="text-amber-600">⏳ Yours: go clean</span>'
       : s.reporter === me ? '<span class="text-forest-700 font-semibold">Your report · tap to clean</span>' : '';
     const best = i === 0 ? (sortMode === 'near' ? 'Closest' : 'Top points') : '';
     return `<button onclick="go('map'); map.setView([${s.lat}, ${s.lng}], 17); openSpot('${s.id}')"
@@ -482,7 +481,7 @@ async function openUser(name) {
     </div>
     <div class="grid grid-cols-3 gap-2 mt-4 text-center">
       <div class="bg-slate-50 rounded-2xl py-2"><div class="text-lg font-extrabold">${p.cleanups}</div><div class="text-[11px] text-slate-500">cleanups</div></div>
-      <div class="bg-slate-50 rounded-2xl py-2"><div class="text-lg font-extrabold">${p.verifications}</div><div class="text-[11px] text-slate-500">checks</div></div>
+      <div class="bg-slate-50 rounded-2xl py-2"><div class="text-lg font-extrabold">${p.reports}</div><div class="text-[11px] text-slate-500">reports</div></div>
       <div class="bg-slate-50 rounded-2xl py-2"><div class="text-lg font-extrabold">${p.bags}</div><div class="text-[11px] text-slate-500">bags</div></div>
     </div>
     <div class="mt-4">${donationCard(d, isMe)}</div>
@@ -558,15 +557,7 @@ async function loadSpots() {
   }
   $('cntOpen').textContent = spots.filter((s) => s.status === 'open').length;
   $('cntClaimed').textContent = spots.filter((s) => s.status === 'claimed').length;
-  $('cntPending').textContent = spots.filter((s) => s.status === 'pending').length;
   $('cntClean').textContent = spots.filter((s) => s.status === 'cleaned').length;
-  const mine = spots.filter(canVerify);
-  const banner = $('verifyBanner');
-  banner.classList.toggle('hidden', !mine.length);
-  if (mine.length) {
-    banner.textContent = `🔍 ${mine.length} cleanup${mine.length > 1 ? 's' : ''} need${mine.length > 1 ? '' : 's'} your check · +10 pts`;
-    banner.onclick = () => { map.setView([mine[0].lat, mine[0].lng], 17); openSpot(mine[0].id); };
-  }
   renderNearest();
 }
 
@@ -589,14 +580,7 @@ function openNearestTask() {
   if (nearest) openSpot(nearest.id);
 }
 
-// Can I be the third person who checks this cleanup?
-function canVerify(s) {
-  if (!me || s.status !== 'pending') return false;
-  if (me === s.reporter || me === s.cleaner || (s.excluded || []).includes(me)) return false;
-  return s.verifier === me || s.open_to_anyone;
-}
-
-// Tell the server we're around, so we can be picked as a verifier for nearby cleanups.
+// Tell the server we're around (and adopt its spelling of our name).
 async function ping() {
   if (!me) return;
   const fd = new FormData();
@@ -683,7 +667,7 @@ function openSpot(id) {
 
   let action = '';
   if (s.status === 'cleaned') {
-    const by = s.verified_by ? `✅ Verified in person by ${esc(s.verified_by)}` : esc(s.verify_note || '');
+    const by = s.verified_by ? `✅ Verified in person by ${esc(s.verified_by)}` : esc(s.verify_note || 'Approved by the AI check.');
     action = `
       <div class="mt-5 rounded-2xl bg-forest-50 p-4">
         <div class="font-extrabold text-forest-800">✨ Cleaned by ${userLink(s.cleaner)}</div>
@@ -693,34 +677,8 @@ function openSpot(id) {
       </div>
       ${s.cleaner !== me ? `<div class="mt-3">${camBtn('🚩 Still dirty? Report it', 'bg-white border-2 border-rose-200 text-rose-600 text-base', `submitFlag('${s.id}', this)`)}</div>
       <p class="text-xs text-center text-slate-500 mt-2">Be at the spot. If the AI sees trash, the cleaner loses the points and you get +10.</p>` : ''}`;
-  } else if (s.status === 'pending') {
-    if (canVerify(s)) {
-      action = `
-        <div class="mt-5 rounded-2xl bg-indigo-50 p-4">
-          <div class="font-extrabold text-indigo-900">🔍 You were picked to check this cleanup</div>
-          <div class="text-sm text-indigo-900/80 mt-0.5">${esc(s.cleaner)} says it's clean. Go there and see for yourself. Their ${s.pending_points} pts are on hold until you do.</div>
-          ${beforeAfter()}
-        </div>
-        <a href="https://www.google.com/maps/dir/?api=1&destination=${s.lat},${s.lng}" target="_blank" rel="noopener"
-           class="mt-3 block text-center w-full rounded-2xl bg-slate-100 font-bold py-3.5">🧭 Directions</a>
-        <div class="grid grid-cols-2 gap-2 mt-2">
-          ${camBtn('✅ It\'s clean', 'bg-forest-500 text-white', `submitVerify('${s.id}', 'clean', this)`)}
-          ${camBtn('🚫 Still dirty', 'bg-rose-500 text-white', `submitVerify('${s.id}', 'dirty', this)`)}
-        </div>
-        <p class="text-xs text-center text-slate-500 mt-2">Take a photo at the spot either way. You get +10 pts for checking.</p>`;
-    } else {
-      const who = s.cleaner === me ? 'Your' : `${esc(s.cleaner)}'s`;
-      const waiting = s.verifier && !s.open_to_anyone ? esc(s.verifier) : 'a nearby volunteer';
-      action = `
-        <div class="mt-5 rounded-2xl bg-indigo-50 p-4">
-          <div class="font-extrabold text-indigo-900">🔍 Waiting for an in-person check</div>
-          <div class="text-sm text-indigo-900/80 mt-0.5">${who} ${s.pending_points} pts are on hold until ${waiting} confirms the spot is clean.</div>
-          ${beforeAfter()}
-        </div>`;
-    }
   } else if (s.reporter === me && s.status !== 'open' && !(s.status === 'claimed' && s.claimed_by === me)) {
-    const message = s.status === 'pending' ? `Your cleanup is awaiting an independent check.`
-      : s.status === 'cleaned' ? `Your reported cleanup is complete.`
+    const message = s.status === 'cleaned' ? `Your reported cleanup is complete.`
         : `${esc(s.claimed_by)} is cleaning it now 🙌`;
     action = `<div class="mt-5 rounded-2xl bg-slate-100 p-4 text-sm text-slate-600 font-medium">You reported this spot. ${message}</div>`;
   } else if (s.status === 'claimed' && s.claimed_by === me) {
@@ -733,8 +691,8 @@ function openSpot(id) {
         <input type="file" accept="image/*" capture="environment" class="hidden" onchange="submitClean('${s.id}', this)">
       </label>` : ''}
       <p class="text-xs text-center text-slate-500 mt-2">${s.self_clean
-        ? '🧹 Solo cleanup: your report photos are the BEFORE photos. Clean it, then take the after photo from the same spot. A nearby volunteer will check it.'
-        : 'Capture the on-site before photo before cleaning. Another volunteer checks the after photo.'}</p>
+        ? '🧹 Solo cleanup: your report photos are the BEFORE photos. Clean it, then take the after photo from the same spot. The AI compares them.'
+        : 'Take the before photo at the spot, clean up, then take the after photo from the same place. The AI compares them.'}</p>
       <button onclick="releaseSpot('${s.id}', this)" class="mt-3 w-full rounded-2xl text-slate-500 font-semibold py-3 underline">Give up this task</button>`;
   } else if (s.status === 'claimed') {
     action = `<div class="mt-5 rounded-2xl bg-amber-50 p-4 text-sm text-amber-800 font-semibold">⏳ ${esc(s.claimed_by)} is cleaning this spot.</div>`;
@@ -743,8 +701,8 @@ function openSpot(id) {
     const label = own ? 'Clean your report' : 'Claim &amp; clean';
     const pts = own ? Math.round(s.points / 2) : s.points;  // cleaning your own report = solo cleanup, half points
     action = `<button onclick="claim('${s.id}')" class="mt-5 w-full rounded-2xl bg-forest-500 text-white font-extrabold py-4 text-lg shadow-lg active:scale-[.98] transition">${label} · +${pts} pts</button><p class="text-xs text-center text-slate-500 mt-2">${own
-      ? 'Cleaning your own report counts as a solo cleanup: half points, the +5 report bonus goes back, max 3 a day, and another volunteer checks it.'
-      : 'Take a before photo to start, then upload an after photo when you finish. Another volunteer checks your cleanup.'}</p>`
+      ? 'Cleaning your own report counts as a solo cleanup: half points, the +5 report bonus goes back, max 3 a day.'
+      : 'Take a before photo to start, then upload an after photo when you finish. The AI checks it and pays your points.'}</p>`
       + (own ? `<button onclick="deleteSpot('${s.id}', this)" class="mt-3 w-full rounded-2xl border-2 border-rose-200 text-rose-600 font-bold py-3 active:scale-[.98] transition">🗑️ Delete my report</button>` : '');
   }
 
@@ -800,25 +758,6 @@ async function sendPhoto(url, input, fields, loadingText) {
     refreshPoints();
     return r;
   } catch (e) { hideLoading(); toast(e.message, 'err'); return null; }
-}
-
-async function submitVerify(id, verdict, input) {
-  const r = await sendPhoto(`/api/spots/${id}/verify`, input, { verdict }, 'Comparing with the cleanup photo…');
-  if (!r) return;
-  const msg = {
-    confirmed: ['✅', 'Cleanup confirmed!', `${esc(r.spot.cleaner)} got their points. Thanks for keeping it honest.`],
-    rejected: ['🚫', 'Marked as still dirty', 'The spot is back on the map for someone else to clean.'],
-    disputed: ['🤔', 'Second opinion needed', "The AI thinks it looks clean, so we're asking one more person to check."],
-  }[r.result];
-  openSheet(`
-    <div class="mx-auto w-10 h-1.5 rounded-full bg-slate-200 mb-6"></div>
-    <div class="text-center">
-      <div class="text-6xl">${msg[0]}</div>
-      <div class="text-2xl font-extrabold text-slate-800 mt-3">${msg[1]}</div>
-      <div class="text-slate-600 mt-2">${msg[2]}</div>
-      ${r.reward ? `<div class="text-3xl font-extrabold text-forest-700 mt-4">+${r.reward} pts</div>` : ''}
-      <button onclick="closeSheet()" class="mt-6 w-full rounded-2xl bg-forest-900 text-white font-bold py-4">Done</button>
-    </div>`);
 }
 
 async function submitFlag(id, input) {
@@ -901,15 +840,12 @@ async function submitClean(id, input) {
 }
 
 function celebrate(r) {
-  const head = r.pending
-    ? `<div class="text-4xl font-extrabold text-indigo-700 mt-3">${r.earned} pts on hold</div>
-       <div class="text-slate-600 mt-2">The AI likes it! ${r.verifier ? `<b>${esc(r.verifier)}</b> was picked` : 'A nearby volunteer will be asked'} to check it in person. Your points unlock once they confirm.</div>`
-    : `<div class="text-4xl font-extrabold text-forest-700 mt-3">+${r.awarded} pts</div>
-       <div class="text-slate-600 mt-2">Trusted volunteer: no in-person check needed this time.</div>`;
+  const head = `<div class="text-4xl font-extrabold text-forest-700 mt-3">+${r.awarded} pts</div>
+       <div class="text-slate-600 mt-2">The AI approved your cleanup.${r.capped ? ' (Daily points limit reached.)' : ''} Anyone can still flag it if the spot isn't really clean.</div>`;
   openSheet(`
     <div class="mx-auto w-10 h-1.5 rounded-full bg-slate-200 mb-6"></div>
     <div class="text-center">
-      <div class="text-6xl">${r.pending ? '🔍' : '🎉'}</div>
+      <div class="text-6xl">🎉</div>
       ${head}
       <div class="text-sm text-slate-500 mt-1">AI: ${r.verification.percent_cleaned}% cleaned · ${esc(r.verification.comment)}</div>
       <div class="grid grid-cols-2 gap-2 mt-5">
@@ -1000,7 +936,7 @@ async function loadLeaders() {
       <div class="w-7 text-center font-extrabold text-slate-400">${i + 1}</div>
       <div class="flex-1 min-w-0">
         <div class="font-bold truncate">${esc(r.user)}${r.user === me ? ' (you)' : ''}</div>
-        <div class="text-xs text-slate-500">${esc(r.level)} · ${r.cleanups} cleanup${r.cleanups === 1 ? '' : 's'} · ${r.verifications} check${r.verifications === 1 ? '' : 's'}</div>
+        <div class="text-xs text-slate-500">${esc(r.level)} · ${r.cleanups} cleanup${r.cleanups === 1 ? '' : 's'}</div>
       </div>
       <div class="font-extrabold text-forest-700">${r.points}</div>
     </li>`).join('')
@@ -1025,16 +961,13 @@ async function loadMe() {
   $('meBar').style.width = next ? `${Math.round(((p.points - floor) / (next - floor)) * 100)}%` : '100%';
   $('meNext').textContent = next ? `${next - p.points} pts to next level` : 'Max level reached 🌍';
   $('meTrust').innerHTML = [
-    p.trusted ? '🛡️ Trusted volunteer' : p.strikes ? `⚠️ ${p.strikes} failed check${p.strikes > 1 ? 's' : ''}` : '🌱 Building trust',
-    `🔍 ${p.verifications} check${p.verifications === 1 ? '' : 's'} done`,
-    p.on_hold ? `⏳ ${p.on_hold} pts on hold` : '',
+    p.trusted ? '🛡️ Trusted volunteer' : p.strikes ? `⚠️ ${p.strikes} "still dirty" flag${p.strikes > 1 ? 's' : ''}` : '🌱 Building trust',
   ].filter(Boolean).map((t) => `<span class="bg-white/15 rounded-full px-3 py-1">${t}</span>`).join('');
   $('meDonations').innerHTML = donationCard(p.donations, true);
 
-  const mine = spots.filter((s) => s.reporter === me || s.cleaner === me || s.claimed_by === me || canVerify(s));
+  const mine = spots.filter((s) => s.reporter === me || s.cleaner === me || s.claimed_by === me);
   $('myActivity').innerHTML = mine.length ? mine.map((s) => {
-    const role = canVerify(s) ? '🔍 Needs your check: +10 pts'
-      : s.cleaner === me ? (s.status === 'pending' ? `Cleaned · ${s.pending_points} pts on hold` : `Cleaned · +${s.awarded} pts`)
+    const role = s.cleaner === me ? `Cleaned · +${s.awarded} pts`
       : s.reporter === me ? 'Reported' : 'Claimed: go clean it!';
     return `<button onclick="go('map'); openSpot('${s.id}')" class="w-full flex items-center gap-3 bg-white rounded-2xl p-2.5 shadow-sm text-left">
       <img src="${esc(s.photos[0])}" class="w-14 h-14 rounded-xl object-cover" alt="">

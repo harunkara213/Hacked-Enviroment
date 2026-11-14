@@ -1,7 +1,8 @@
 # Hacker Environment: guide for AI coding agents (Claude, Codex) and teammates
 
 Litter cleanup app for HackED Beta 2026. Users report dirty spots with photos, volunteers clean
-them, a random nearby person confirms the cleanup in person, then points are paid.
+them, and the AI checks the before/after photos and pays the points. Anyone can flag a
+"cleaned" spot that's still dirty, which takes the points back.
 Live: https://hacker-environment.onrender.com. **Every push to `main` deploys to the live site.**
 
 ## Workflow rules
@@ -15,7 +16,7 @@ Live: https://hacker-environment.onrender.com. **Every push to `main` deploys to
 
 ## Stack (keep it)
 - `app.py`: FastAPI, every endpoint and game rule. `ai.py`: Gemini calls (photo scoring,
-  cleanup check, fake check). `db.py`: database layer. `photocheck.py`: photo fingerprints.
+  before/after cleanup check). `db.py`: database layer. `photocheck.py`: photo fingerprints.
 - `static/index.html` + `static/app.js`: plain JS, Tailwind CDN, Leaflet. No build step, no npm.
 - Mobile-first: every screen must work at 375 px wide.
 
@@ -30,15 +31,16 @@ Live: https://hacker-environment.onrender.com. **Every push to `main` deploys to
 - Inside a `with closing(db()) as c, c:` block, pass `c=c` to `save_photo(...)`, or SQLite locks itself.
 
 ## Anti-cheat rules: do not weaken these
-- Points are paid only after a **random nearby user** confirms the cleanup in person
-  (not the reporter, not the cleaner). Disputes go to a second verifier.
+- Points are paid when the AI approves the after photo: same place as the before photos and at
+  least 60% cleaned (`MIN_PERCENT_CLEANED`). There is no in-person verification step (removed on purpose).
+- A "still dirty" flag (photo at the spot, AI must see litter) reopens the spot, takes the points back
+  and gives the cleaner a strike.
 - Every after/check photo must be within 250 m (GPS). A before photo is required to start a cleanup.
   GPS must also be precise enough: `MAX_ACTION_LOCATION_ACCURACY_M` (Render env, default 75 m) is the one
   setting for this; the app reads it from `/api/status`. Raise it if GPS is weak indoors at a demo.
 - Cleaning your own report or "I'll clean it myself" = solo cleanup: half points, report bonus
-  taken back, max 3 a day, 60 s minimum, always checked in person, never counts toward donations.
-- AI fake check (screens, screenshots, stock, AI-made) = strike. Any strike or 2+ complaints locks
-  donations for good. Donations: $1-20, $50/month cap, 7-day hold, go to a person, not a cleanup.
+  taken back, max 3 a day, 60 s minimum, never counts toward donations.
+- Any strike ("still dirty" flag) or 2+ complaints locks donations for good. Donations: $1-20, $50/month cap, 7-day hold, go to a person, not a cleanup.
 - **Photos must be new**: the app rejects gallery uploads, photos older than 10 minutes, PNG
   screenshots and files whose metadata says AI-generated/AI-edited (IPTC/C2PA digital source type
   "trainedAlgorithmicMedia", case-insensitive) or edited (Photoshop...). A C2PA label by itself is
@@ -50,7 +52,8 @@ Live: https://hacker-environment.onrender.com. **Every push to `main` deploys to
 ## AI
 - Default model in `ai.py` (`MODEL`). If it doesn't exist for our key, `_generate` falls back to
   `gemini-2.5-flash`. `/api/status` shows the model actually in use and the last AI error.
-- Keep structured JSON output (`response_schema`) and the `looks_fake` field in every schema.
+- Keep structured JSON output (`response_schema`). There is no AI fake-photo check (removed on purpose);
+  fake photos are caught by the app-side metadata checks and photo fingerprints.
 
 ## Run locally
 ```

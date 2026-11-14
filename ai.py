@@ -53,7 +53,6 @@ class Assessment(BaseModel):
     estimated_minutes: int = Field(description="Estimated minutes for one person to clean it")
     hazards: list[str] = Field(description="Hazards to warn volunteers about, e.g. broken glass, needles. Empty if none")
     summary: str = Field(description="One short sentence describing the spot for volunteers")
-    looks_fake: bool = Field(description="True if any photo looks like a photo of a screen, a screenshot, a stock/web image, or AI-generated/edited")
 
 
 class DetectedObject(BaseModel):
@@ -73,12 +72,8 @@ class Verification(BaseModel):
     same_place: bool = Field(description="True if the AFTER photo plausibly shows the same location as the BEFORE photos")
     percent_cleaned: int = Field(description="0-100: how much of the litter from BEFORE is gone in AFTER")
     comment: str = Field(description="One short, encouraging sentence for the volunteer about the result")
-    looks_fake: bool = Field(description="True if the AFTER photo looks like a photo of a screen, a screenshot, a stock/web image, or AI-generated/edited")
 
 
-FAKE_RULE = """Also check for cheating: set looks_fake=true only if a photo is clearly a picture of a screen
-(moire, pixels, bezels), a screenshot, a stock/web image (watermark, studio look) or AI-generated/edited.
-Normal phone photos, even blurry or dark ones, are NOT fake."""
 
 ASSESS_PROMPT = """You assess photos for a community litter cleanup app. First recognize waste-capable objects; then separately decide whether each appears discarded from visible scene context. Recognize glass jars and bottles, plastic bottles and containers, aluminum cans, food packaging, plastic bags, paper, cardboard, wrappers, tissues, and other discarded human-made materials. Report intact/useful objects too; do not equate object category with litter.
 
@@ -87,7 +82,7 @@ Examine all image areas. A single small item can be litter. Use floor/ground pla
 Set outcome=litter_detected when any object is likely discarded; no_litter_detected only when you can confidently see no discarded waste (or all recognized items are clearly not discarded); otherwise use unable_to_determine. Empty objects only when no relevant object can be recognized. If it is too dark, blurry, distant, obstructed, or ambiguous, use unable_to_determine with low confidence and explain. Never claim no litter solely because recognition failed. Deduplicate repeated views of the same item.
 
 For a confirmed report, give a short summary naming the visible waste. Be realistic about effort: one or two small items = difficulty 1, a scattered handful = 2, a larger area or several bags = 3, a substantial dump = 4-5. Estimate bags, minutes, and hazards from what is visible, not from the photo quality.
-""" + FAKE_RULE
+"""
 
 CROP_PROMPT = """Recheck these photos for small or distant waste-capable objects. Full originals are followed by overlapping detail crops of the same photos. Identify specific object types first, then judge discard status from the full scene context. Do not count one physical item multiple times across crops. Return one consolidated assessment. Keep outcome unable_to_determine when recognition/context is insufficient; no_litter_detected requires confident visual evidence."""
 
@@ -95,7 +90,7 @@ VERIFY_PROMPT = """You are verifying a volunteer cleanup for a community cleanup
 The first image(s) are BEFORE photos of a dirty spot. The LAST image is the AFTER photo the volunteer took.
 Decide whether the AFTER photo shows the same place, and how much of the litter is gone.
 Be fair but strict: a photo of a different clean place is NOT a cleanup.
-""" + FAKE_RULE
+"""
 
 
 # ---------- scoring ----------
@@ -206,7 +201,6 @@ def assess_spot(images: list[tuple[bytes, str]]) -> dict:
         "estimated_minutes": 0,
         "hazards": [],
         "summary": "AI could not determine whether this photo shows discarded litter.",
-        "looks_fake": False,
         "points": 0,
         "source": "demo",
     }
@@ -224,5 +218,5 @@ def verify_cleanup(before: list[tuple[bytes, str]], after: tuple[bytes, str]) ->
         except Exception as e:
             LAST_ERROR = repr(e)[:300]
             print(f"[ai] verify failed, using demo mode: {e!r}")
-    return {"same_place": True, "percent_cleaned": 100, "looks_fake": False,
+    return {"same_place": True, "percent_cleaned": 100,
             "comment": "Nice work! (demo mode: AI offline)", "source": "demo"}
