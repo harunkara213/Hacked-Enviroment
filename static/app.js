@@ -57,7 +57,9 @@ const hideLoading = () => $('loading').classList.add('hidden');
 
 // Phones first return a rough Wi-Fi/cell fix (often 200-500 m off), then real GPS.
 // So collect fixes for a few seconds and keep the most accurate one.
-const PHOTO_LOCATION_ACCURACY_M = 50;
+// Updated from the server's /api/status (MAX_ACTION_LOCATION_ACCURACY_M on Render), so the
+// app and server always agree and it can be loosened for an indoor demo without a code change.
+let PHOTO_LOCATION_ACCURACY_M = 75;
 const MAX_REPORT_LOCATION_ACCURACY_M = 75;
 function locError(kind, accuracy) {
   const e = new Error(kind === 'denied' ? 'Location access is turned off for this site.'
@@ -1065,6 +1067,7 @@ async function boot() {
   $('nameInput').addEventListener('keydown', (e) => { if (e.key === 'Enter') saveName(); });
   api('/api/status').then((s) => {
     aiStatus = s;
+    if (Number.isFinite(s.max_location_accuracy_m)) PHOTO_LOCATION_ACCURACY_M = s.max_location_accuracy_m;
     $('aiBadge').textContent = s.ai === 'gemini' ? `AI online · ${s.model}` : 'AI unavailable · demo scoring';
     $('aiBadge').title = s.ai === 'gemini' ? '' : (s.last_error || 'Configure GEMINI_API_KEY to enable photo analysis.');
     $('aiBadge').onclick = () => {

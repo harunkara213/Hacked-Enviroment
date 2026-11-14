@@ -435,7 +435,9 @@ def manifest():
 @app.get("/api/status")
 def status():
     return {"ai": "gemini" if ai._get_client() else "demo", "model": ai.ACTIVE_MODEL, "last_error": ai.LAST_ERROR,
-            "storage": "postgres" if dbmod.IS_PG else "sqlite (data is lost on restart)"}
+            "storage": "postgres" if dbmod.IS_PG else "sqlite (data is lost on restart)",
+            # One knob for GPS strictness: set MAX_ACTION_LOCATION_ACCURACY_M on Render; the app reads it here.
+            "max_location_accuracy_m": MAX_ACTION_LOCATION_ACCURACY_M}
 
 
 @app.post("/api/ping")

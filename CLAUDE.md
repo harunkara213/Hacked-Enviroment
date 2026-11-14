@@ -33,6 +33,8 @@ Live: https://hacker-environment.onrender.com. **Every push to `main` deploys to
 - Points are paid only after a **random nearby user** confirms the cleanup in person
   (not the reporter, not the cleaner). Disputes go to a second verifier.
 - Every after/check photo must be within 250 m (GPS). A before photo is required to start a cleanup.
+  GPS must also be precise enough: `MAX_ACTION_LOCATION_ACCURACY_M` (Render env, default 75 m) is the one
+  setting for this; the app reads it from `/api/status`. Raise it if GPS is weak indoors at a demo.
 - Cleaning your own report or "I'll clean it myself" = solo cleanup: half points, report bonus
   taken back, max 3 a day, 60 s minimum, always checked in person, never counts toward donations.
 - AI fake check (screens, screenshots, stock, AI-made) = strike. Any strike or 2+ complaints locks

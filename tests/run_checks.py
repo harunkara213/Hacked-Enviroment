@@ -222,5 +222,12 @@ ok(c.post(f"/api/spots/{h2['id']}/release", data={"user": "Mallory"}).status_cod
 r = c.post(f"/api/spots/{h2['id']}/release", data={"user": "Heloo"}).json()
 ok(r["status"] == "open" and r["claimed_by"] is None and r["points"] == h2["points"], "give up: back to open, full points")
 
+print("== GPS accuracy")
+g = report("rep1").json()["spot"]["id"]
+c.post(f"/api/spots/{g}/claim", data={"user": "bob"})
+ok(post(f"/api/spots/{g}/start", files=img(), user="bob", accuracy_m="400").status_code == 422, "imprecise GPS (±400 m) refused")
+ok(post(f"/api/spots/{g}/start", files=img(), user="bob", accuracy_m="15").status_code == 200, "precise GPS (±15 m) accepted")
+ok(c.get("/api/status").json()["max_location_accuracy_m"] == A.MAX_ACTION_LOCATION_ACCURACY_M, "status tells the app the GPS limit")
+
 print(f"\n{'ALL PASSED' if not FAILED else f'{len(FAILED)} FAILED'}")
 sys.exit(1 if FAILED else 0)
