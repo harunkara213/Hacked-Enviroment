@@ -30,8 +30,9 @@ Built at HackED Beta 2026.
 - Points are capped per user per day.
 - AI checks every photo for fakes (photo of a screen, screenshot, stock or AI image). A fake photo is a strike.
 - Photos must be taken now with the camera: no gallery uploads, nothing older than 10 minutes, no screenshots,
-  and files carrying AI or editing metadata (C2PA Content Credentials, IPTC "AI-generated" tags, Photoshop and
-  other editors) are refused.
+  and files whose metadata marks them as AI-generated or AI-edited (the IPTC / C2PA "digital source type") or
+  edited in Photoshop and other editors are refused. (A Content Credentials label alone is fine: many phones add
+  one to every normal camera photo.)
 - Every photo gets a perceptual fingerprint. A photo that was already uploaded (even re-saved or resized) is
   refused, which blocks reusing the before photo as the after photo, one photo for several spots, and verifiers
   re-uploading the cleaner's photo.

@@ -18,7 +18,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from fastapi import FastAPI, File, Form, HTTPException, Response, UploadFile  # noqa: E402
+from fastapi import FastAPI, File, Form, HTTPException, Request, Response, UploadFile  # noqa: E402
 from fastapi.responses import FileResponse  # noqa: E402
 from fastapi.staticfiles import StaticFiles  # noqa: E402
 
@@ -126,6 +126,9 @@ def init_db():
         );
         CREATE TABLE IF NOT EXISTS photos (
             name TEXT PRIMARY KEY, mime TEXT NOT NULL, data BLOB NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS client_rejects (
+            ts REAL NOT NULL, user TEXT, reason TEXT, detail TEXT, agent TEXT
         );
         """)
         have = c.columns("spots")
@@ -444,7 +447,27 @@ def status():
     return {"ai": "gemini" if ai._get_client() else "demo", "model": ai.ACTIVE_MODEL, "last_error": ai.LAST_ERROR,
             "storage": "postgres" if dbmod.IS_PG else "sqlite (data is lost on restart)",
             # One knob for GPS strictness: set MAX_ACTION_LOCATION_ACCURACY_M on Render; the app reads it here.
-            "max_location_accuracy_m": MAX_ACTION_LOCATION_ACCURACY_M}
+            "max_location_accuracy_m": MAX_ACTION_LOCATION_ACCURACY_M,
+            "recent_photo_rejections": recent_rejections()}
+
+
+def recent_rejections():
+    """Last photos the app refused before upload (reason, file info, phone), to spot false alarms."""
+    with closing(db()) as c:
+        rows = c.execute("SELECT ts, reason, detail, agent FROM client_rejects ORDER BY ts DESC LIMIT 5").fetchall()
+    return [{"min_ago": round((time.time() - r["ts"]) / 60), "reason": r["reason"], "file": r["detail"],
+             "device": r["agent"]} for r in rows]
+
+
+@app.post("/api/client-reject")
+def client_reject(request: Request, user: str = Form(""), reason: str = Form(""), detail: str = Form("")):
+    ua = request.headers.get("user-agent", "")
+    device = next((d for d in ("iPhone", "iPad", "Android", "Windows", "Macintosh", "Linux") if d in ua), "other")
+    with closing(db()) as c, c:
+        c.execute("INSERT INTO client_rejects VALUES (?,?,?,?,?)",
+                  (time.time(), user[:24], reason[:200], detail[:120], f"{device}: {ua[:150]}"))
+        c.execute("DELETE FROM client_rejects WHERE ts < ?", (time.time() - 7 * 86400,))
+    return {"ok": True}
 
 
 @app.post("/api/ping")

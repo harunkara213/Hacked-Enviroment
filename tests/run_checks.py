@@ -245,5 +245,11 @@ w = report("Eli", self_clean="true").json()["spot"]
 r = post(f"/api/spots/{w['id']}/clean", files=img(), user="Eli")
 ok(r.status_code == 409 and " s." in r.json()["detail"], "too-early after photo says how many seconds are left")
 
+print("== app-side photo rejections are logged")
+ok(c.post("/api/client-reject", data={"user": "Tester", "reason": "This photo is not new.", "detail": "image/jpeg 900 KB, age 45 min"},
+          headers={"user-agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0)"}).status_code == 200, "rejection report accepted")
+rj = c.get("/api/status").json()["recent_photo_rejections"]
+ok(rj and rj[0]["reason"] == "This photo is not new." and rj[0]["device"].startswith("iPhone"), "status shows recent rejections with device")
+
 print(f"\n{'ALL PASSED' if not FAILED else f'{len(FAILED)} FAILED'}")
 sys.exit(1 if FAILED else 0)

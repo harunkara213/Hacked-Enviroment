@@ -278,20 +278,35 @@ function fmtDist(d) {
 // editing-app signature. The server adds duplicate detection and the AI fake check, and a
 // random nearby person still has to confirm cleanups in person.
 const MAX_PHOTO_AGE_MS = 10 * 60 * 1000;
+// Note: many phones (Google Pixel, newer Samsung Galaxy and iPhone models) attach Content
+// Credentials (C2PA) to EVERY normal camera photo, so a C2PA label alone is not suspicious.
+// What matters is the "digital source type" inside it (and in IPTC/XMP): AI generators and
+// AI edits (e.g. Galaxy AI, Magic Editor) write "trainedAlgorithmicMedia"; a real camera writes
+// "digitalCapture".
 const PROVENANCE_MARKERS = [
-  // C2PA / Content Credentials (used by OpenAI, Google, Adobe, Microsoft for AI images)
-  ['c2pa', 'Content Credentials (AI / edited image)'], ['jumbf', 'Content Credentials (AI / edited image)'],
-  // IPTC "digital source type" written by AI generators
-  ['trainedAlgorithmicMedia', 'AI-generated image tag'], ['compositeSynthetic', 'AI-generated image tag'],
+  ['trainedAlgorithmicMedia', 'AI-generated or AI-edited image tag'],
+  ['compositeSynthetic', 'AI-generated image tag'],
   ['Midjourney', 'Midjourney'], ['DALL-E', 'DALL-E'], ['Stable Diffusion', 'Stable Diffusion'],
-  ['stable-diffusion', 'Stable Diffusion'], ['NovelAI', 'NovelAI'], ['Firefly', 'Adobe Firefly'],
-  ['SynthID', 'Google SynthID'], ['Imagen', 'Google Imagen'],
+  ['stable-diffusion', 'Stable Diffusion'], ['NovelAI', 'NovelAI'], ['Adobe Firefly', 'Adobe Firefly'],
   // editing apps
   ['Adobe Photoshop', 'Photoshop'], ['Photoshop 3.0', 'Photoshop'], ['GIMP', 'GIMP'], ['Snapseed', 'Snapseed'],
   ['Lightroom', 'Lightroom'], ['Picsart', 'Picsart'], ['Canva', 'Canva'], ['Facetune', 'Facetune'], ['Meitu', 'Meitu'],
 ];
 
+// Tell the server why a photo was refused in the app, so false alarms show up on /api/status.
+function reportRejection(reason, file) {
+  const fd = new FormData();
+  fd.append('user', me || '');
+  fd.append('reason', reason);
+  fd.append('detail', `${file.type || '?'} ${Math.round(file.size / 1024)} KB, age ${Math.round((Date.now() - (file.lastModified || Date.now())) / 60000)} min`);
+  fetch('/api/client-reject', { method: 'POST', body: fd }).catch(() => {});
+}
+
 async function checkPhotoOrigin(file) {
+  try { await checkPhotoOriginInner(file); } catch (e) { reportRejection(e.message, file); throw e; }
+}
+
+async function checkPhotoOriginInner(file) {
   if (file.lastModified && Date.now() - file.lastModified > MAX_PHOTO_AGE_MS) {
     throw new Error('This photo is not new. Take a fresh photo with the camera right now.');
   }
@@ -313,7 +328,8 @@ async function checkPhotoOrigin(file) {
     const tail = new Uint8Array(await file.slice(Math.max(0, file.size - 128 * 1024)).arrayBuffer());
     text = new TextDecoder('latin1').decode(head) + new TextDecoder('latin1').decode(tail);
   }
-  const hit = PROVENANCE_MARKERS.find(([m]) => text.includes(m));
+  const lower = text.toLowerCase();  // e.g. "compositeWithTrainedAlgorithmicMedia" has a capital T
+  const hit = PROVENANCE_MARKERS.find(([m]) => lower.includes(m.toLowerCase()));
   if (hit) throw new Error(`This photo looks edited or AI-made (${hit[1]}). Take a new photo with the camera.`);
 }
 

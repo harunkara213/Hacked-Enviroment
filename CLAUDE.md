@@ -40,8 +40,11 @@ Live: https://hacker-environment.onrender.com. **Every push to `main` deploys to
 - AI fake check (screens, screenshots, stock, AI-made) = strike. Any strike or 2+ complaints locks
   donations for good. Donations: $1-20, $50/month cap, 7-day hold, go to a person, not a cleanup.
 - **Photos must be new**: the app rejects gallery uploads, photos older than 10 minutes, PNG
-  screenshots and files with AI/editing metadata (C2PA, IPTC "trainedAlgorithmicMedia",
-  Photoshop...), and the server rejects any photo that was already uploaded (`photocheck.py`).
+  screenshots and files whose metadata says AI-generated/AI-edited (IPTC/C2PA digital source type
+  "trainedAlgorithmicMedia", case-insensitive) or edited (Photoshop...). A C2PA label by itself is
+  NOT a reason to reject: Pixel/Galaxy/iPhone cameras add it to normal photos. The server rejects
+  any photo that was already uploaded (`photocheck.py`). App-side rejections are reported to
+  `/api/client-reject` and the last 5 show on `/api/status` (check there for false alarms).
 - If the AI fails, scoring must not accept photos automatically (`ai.py` demo path gives 0 points).
 
 ## AI
