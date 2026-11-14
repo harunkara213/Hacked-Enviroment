@@ -926,17 +926,23 @@ async function loadLeaders() {
     const r = rows[i];
     if (!r) return '<div></div>';
     const h = ['h-36', 'h-28', 'h-24'][i];
-    return `<div class="bg-white rounded-3xl shadow-sm ${h} flex flex-col items-center justify-center px-1 ${r.user === me ? 'ring-2 ring-forest-500' : ''}">
+    return `<div data-user="${esc(r.user)}" onclick="openUser(this.dataset.user)" class="cursor-pointer bg-white rounded-3xl shadow-sm ${h} flex flex-col items-center justify-center px-1 ${r.user === me ? 'ring-2 ring-forest-500' : ''}">
       <div class="text-3xl">${medal[i]}</div>
-      <div class="font-extrabold text-sm truncate max-w-full">${esc(r.user)}</div>
+      <div class="font-extrabold text-sm truncate max-w-full">${esc(r.user)}${r.donatable ? ' 💛' : ''}</div>
       <div class="text-forest-700 font-bold text-sm">${r.points} pts</div></div>`;
   }).join('');
+  // 💛 = verified volunteer who can receive donations; 🔒 = locked for good ("still dirty" flag or complaints)
+  const badge = (r) => r.donatable
+    ? '<span class="ml-1.5 text-[10px] font-extrabold uppercase tracking-wide bg-amber-100 text-amber-800 rounded-full px-2 py-0.5">💛 Verified · donations on</span>'
+    : r.donation_locked
+      ? '<span class="ml-1.5 text-[10px] font-extrabold uppercase tracking-wide bg-rose-50 text-rose-700 rounded-full px-2 py-0.5">🔒 Donations locked</span>'
+      : '';
   $('leaderList').innerHTML = rows.length ? rows.map((r, i) => `
     <li data-user="${esc(r.user)}" onclick="openUser(this.dataset.user)" class="flex items-center gap-3 px-4 py-3 cursor-pointer ${r.user === me ? 'bg-forest-50' : ''}">
       <div class="w-7 text-center font-extrabold text-slate-400">${i + 1}</div>
       <div class="flex-1 min-w-0">
         <div class="font-bold truncate">${esc(r.user)}${r.user === me ? ' (you)' : ''}</div>
-        <div class="text-xs text-slate-500">${esc(r.level)} · ${r.cleanups} cleanup${r.cleanups === 1 ? '' : 's'}</div>
+        <div class="text-xs text-slate-500 mt-0.5">${esc(r.level)} · ${r.cleanups} cleanup${r.cleanups === 1 ? '' : 's'}${badge(r)}</div>
       </div>
       <div class="font-extrabold text-forest-700">${r.points}</div>
     </li>`).join('')

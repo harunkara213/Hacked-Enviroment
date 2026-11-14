@@ -255,5 +255,14 @@ ok(c.post("/api/client-reject", data={"user": "Tester", "reason": "This photo is
 rj = c.get("/api/status").json()["recent_photo_rejections"]
 ok(rj and rj[0]["reason"] == "This photo is not new." and rj[0]["device"].startswith("iPhone"), "status shows recent rejections with device")
 
+print("== demo people on Ranks")
+lb = {r["user"]: r for r in c.get("/api/leaderboard").json()}
+ok(all(lb[n]["donatable"] for n in ("Sofia", "Aylin", "Marcus")), "Sofia, Aylin, Marcus can receive donations")
+ok(lb["Jin"]["donation_locked"] and lb["Priya"]["donation_locked"], "Jin (still-dirty flag) and Priya (complaints) are locked")
+ok(not lb["Noah"]["donatable"] and not lb["Noah"]["donation_locked"], "Noah is not there yet")
+ok(not any(s["id"].startswith("demohist-") for s in c.get("/api/spots").json()), "demo people's past cleanups stay off the map")
+A.seed_demo()
+ok(c.get("/api/users/Sofia").json()["cleanups"] == 12, "restart doesn't duplicate demo people")
+
 print(f"\n{'ALL PASSED' if not FAILED else f'{len(FAILED)} FAILED'}")
 sys.exit(1 if FAILED else 0)

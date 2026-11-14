@@ -376,6 +376,60 @@ def seed_demo():
                        d["bags"], d["minutes"], json.dumps(d["hazards"]), d["summary"],
                        ai.points_for(d["difficulty"], d["bags"]), "demo-seed",
                        time.time() - d["hours_ago"] * 3600))
+    seed_demo_people()
+
+
+# Demo volunteers with a past history, so Ranks shows who can receive donations and who can't.
+# Their past cleanups are stored as hidden spots (seeded=2): they count for points, donation
+# rules and profiles, but don't appear on the map. Donation status is computed by the real rules.
+DEMO_REPORTERS = ["Ava", "Leo", "Mia", "Omar", "Lina"]
+DEMO_PEOPLE = [
+    # name, cleanups, account age (days), extras
+    ("Sofia", 12, 30, {"donations": [("Ava", 2000, "released"), ("Leo", 1500, "released")]}),
+    ("Aylin", 10, 21, {"donations": [("Omar", 1000, "held")]}),
+    ("Marcus", 6, 18, {}),
+    ("Jin", 7, 25, {"still_dirty_flag": True}),       # caught once -> donations locked for good
+    ("Priya", 5, 16, {"complaints": ["Ava", "Omar"]}),  # 2 complaints -> locked
+    ("Noah", 1, 2, {}),                               # too new
+]
+
+
+def seed_demo_people():
+    with closing(db()) as c, c:
+        if c.execute("SELECT 1 FROM spots WHERE id LIKE 'demohist-%' LIMIT 1").fetchone():
+            return
+        photo = save_photo((BASE / "static" / "demo" / "park-lawn-picnic.jpg").read_bytes(), "image/jpeg", c=c)
+        rnd = random.Random(7)
+        now = time.time()
+        for name, n, days, extra in DEMO_PEOPLE:
+            start = now - days * 86400
+            c.execute("INSERT INTO events VALUES (?,?,?,?,?)", (name, "joined", 0, None, start))
+            for i in range(n):
+                sid = f"demohist-{name.lower()}-{i}"
+                diff, bags = rnd.randint(1, 4), rnd.randint(1, 5)
+                pts = ai.points_for(diff, bags)
+                ts = start + (i + 1) * (now - start) / (n + 1)
+                reporter = DEMO_REPORTERS[i % len(DEMO_REPORTERS)]
+                c.execute("""INSERT INTO spots (id, lat, lng, reporter, photos, difficulty, bags, minutes, hazards,
+                             summary, points, ai_source, created_at, status, claimed_by, cleaner, after_photo,
+                             percent_cleaned, awarded, cleaned_at, verify_note, seeded)
+                             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,'cleaned',?,?,?,?,?,?,?,2)""",
+                          (sid, 53.52 + rnd.uniform(-0.01, 0.01), -113.53 + rnd.uniform(-0.015, 0.015), reporter,
+                           json.dumps([photo]), diff, bags, 15 * diff, "[]", "Past cleanup (demo history).", pts,
+                           "demo-seed", ts - 3600, name, name, photo, 100, pts, ts, "Approved by the AI check."))
+                c.execute("INSERT INTO events VALUES (?,?,?,?,?)", (reporter, "report", 5, sid, ts - 3600))
+                c.execute("INSERT INTO events VALUES (?,?,?,?,?)", (name, "clean", pts, sid, ts))
+            if extra.get("still_dirty_flag"):
+                sid = f"demohist-{name.lower()}-0"
+                got = c.execute("SELECT awarded FROM spots WHERE id=?", (sid,)).fetchone()[0]
+                c.execute("INSERT INTO events VALUES (?,?,?,?,?)", (name, "revoke", -got, sid, now - 86400))
+            for who in extra.get("complaints", []):
+                c.execute("INSERT INTO complaints VALUES (?,?,?,?,?) ON CONFLICT DO NOTHING",
+                          (who, name, "fake_cleanup", None, now - 2 * 86400))
+            for donor, cents, status in extra.get("donations", []):
+                c.execute("INSERT INTO donations VALUES (?,?,?,?,?,?,?)",
+                          (uuid.uuid4().hex[:12], donor, name, cents, now - 3 * 86400, status,
+                           now - 3 * 86400 + DON_HOLD_S))
 
 
 seed_demo()
@@ -454,7 +508,8 @@ def ping(user: str = Form(...), lat: float | None = Form(None), lng: float | Non
 @app.get("/api/spots")
 def list_spots(lat: float | None = None, lng: float | None = None):
     with closing(db()) as c, c:
-        rows = c.execute("SELECT * FROM spots ORDER BY created_at DESC").fetchall()
+        # seeded=2 = demo people's past cleanups: they count for points/profiles but stay off the map
+        rows = c.execute("SELECT * FROM spots WHERE COALESCE(seeded, 0) != 2 ORDER BY created_at DESC").fetchall()
     result = [spot_out(r) for r in rows]
     if lat is not None and lng is not None and -90 <= lat <= 90 and -180 <= lng <= 180:
         for spot in result:
@@ -757,7 +812,12 @@ def leaderboard():
             SELECT user, SUM(points) AS points,
                    SUM(CASE WHEN kind='clean' THEN 1 ELSE 0 END) AS cleanups, SUM(CASE WHEN kind='verify' THEN 1 ELSE 0 END) AS verifications
             FROM events GROUP BY user ORDER BY points DESC, cleanups DESC LIMIT 50""").fetchall()
-    return [{**dict(r), "level": level_for(r["points"])["title"]} for r in rows]
+        out = []
+        for r in rows:
+            d = donation_status(c, r["user"])
+            out.append({**dict(r), "level": level_for(r["points"])["title"],
+                        "donatable": d["eligible"], "donation_locked": d["locked"]})
+    return out
 
 
 @app.get("/api/users/{name}")
