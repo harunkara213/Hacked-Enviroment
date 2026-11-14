@@ -307,13 +307,21 @@ async function checkPhotoOrigin(file) {
   try { await checkPhotoOriginInner(file); } catch (e) { reportRejection(e.message, file); throw e; }
 }
 
+// Each photo check can be switched back on separately. All OFF for now (turn on one by one).
+const PHOTO_CHECKS = {
+  maxAge: false,       // refuse photos older than 10 minutes
+  noScreenshots: false, // refuse PNG files
+  aiMetadata: false,    // refuse files tagged as AI-generated/AI-edited or saved by editing apps
+};
+
 async function checkPhotoOriginInner(file) {
-  if (file.lastModified && Date.now() - file.lastModified > MAX_PHOTO_AGE_MS) {
+  if (PHOTO_CHECKS.maxAge && file.lastModified && Date.now() - file.lastModified > MAX_PHOTO_AGE_MS) {
     throw new Error('This photo is not new. Take a fresh photo with the camera right now.');
   }
-  if (file.type === 'image/png') {
+  if (PHOTO_CHECKS.noScreenshots && file.type === 'image/png') {
     throw new Error("Screenshots aren't accepted. Take a photo with the camera.");
   }
+  if (!PHOTO_CHECKS.aiMetadata) return;
   // Metadata lives at the start of the file (EXIF/XMP/C2PA). For JPEGs, only scan up to the
   // start of the image data (SOS marker FF DA), so random pixel bytes can't cause a false alarm.
   let head = new Uint8Array(await file.slice(0, 512 * 1024).arrayBuffer());

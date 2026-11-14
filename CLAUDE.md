@@ -47,8 +47,10 @@ Live: https://hacker-environment.onrender.com. **Every push to `main` deploys to
   no "report user" button, never shown in the app or API (`public_donation_status` strips them), filed only
   through `/api/users/{name}/complain` by the team. Publicly, only "💛 Verified · donations on" is shown;
   nobody else's donation status (locked or not) is visible to other users. Donations: $1-20, $50/month cap, 7-day hold, go to a person, not a cleanup.
-- **Photos must be new**: the app rejects gallery uploads, photos older than 10 minutes, PNG
-  screenshots and files whose metadata says AI-generated/AI-edited (IPTC/C2PA digital source type
+- **Photo authenticity checks are built but switched OFF** (they flagged real iPhone photos; we turn them
+  back on one at a time). App side: `PHOTO_CHECKS` in `static/app.js` (`maxAge`, `noScreenshots`,
+  `aiMetadata`). Server side: `CHECK_REUSED_PHOTOS=1` env. When on: the app rejects photos older than
+  10 minutes, PNG screenshots and files whose metadata says AI-generated/AI-edited (IPTC/C2PA digital source type
   "trainedAlgorithmicMedia", case-insensitive) or edited (Photoshop...). A C2PA label by itself is
   NOT a reason to reject: Pixel/Galaxy/iPhone cameras add it to normal photos. The server rejects
   any photo that was already uploaded (`photocheck.py`). App-side rejections are reported to

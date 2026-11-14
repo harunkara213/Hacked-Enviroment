@@ -35,6 +35,9 @@ DAILY_POINT_CAP = int(os.getenv("DAILY_POINT_CAP", "1000"))
 MAX_CLEAN_DISTANCE_M = float(os.getenv("MAX_CLEAN_DISTANCE_M", "250"))
 MAX_ACTION_LOCATION_ACCURACY_M = float(os.getenv("MAX_ACTION_LOCATION_ACCURACY_M", "75"))
 MIN_PERCENT_CLEANED = 60
+# Refuse photos that were already uploaded (perceptual fingerprint). OFF for now; set
+# CHECK_REUSED_PHOTOS=1 on Render to switch it back on. Fingerprints are still stored either way.
+CHECK_REUSED_PHOTOS = os.getenv("CHECK_REUSED_PHOTOS") == "1"
 ALLOWED_MIME = {"image/jpeg", "image/png", "image/webp"}
 
 FLAG_REWARD = 10
@@ -203,7 +206,9 @@ async def read_photo(f: UploadFile) -> tuple[bytes, str]:
 
 def reject_if_reused(data: bytes):
     """Every photo must be new: catches the same shot used as before and after, one photo for
-    several spots, a verifier re-uploading the cleaner's photo, or someone else's upload."""
+    several spots, or someone else's upload. Only active when CHECK_REUSED_PHOTOS is on."""
+    if not CHECK_REUSED_PHOTOS:
+        return
     h = photocheck.dhash(data)
     if not h:
         return

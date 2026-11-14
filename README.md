@@ -24,12 +24,12 @@ Built at HackED Beta 2026.
 - Anyone passing by can flag a cleaned spot as still dirty and it goes back on the map. Some places get dirty
   again fast, so a cleaner's first 2 flags cost nothing; from the 3rd on, the points are taken back and it's a strike.
 - Points are capped per user per day.
-- Photos must be taken now with the camera: no gallery uploads, nothing older than 10 minutes, no screenshots,
-  and files whose metadata marks them as AI-generated or AI-edited (the IPTC / C2PA "digital source type") or
-  edited in Photoshop and other editors are refused. (A Content Credentials label alone is fine: many phones add
-  one to every normal camera photo.)
-- Every photo gets a perceptual fingerprint. A photo that was already uploaded (even re-saved or resized) is
-  refused, which blocks reusing the before photo as the after photo and one photo for several spots.
+- **Photo authenticity checks (built, currently switched off while we tune them; re-enabled one by one):**
+  - nothing older than 10 minutes and no screenshots;
+  - files whose metadata marks them as AI-generated or AI-edited (the IPTC / C2PA "digital source type") or
+    saved by editing apps;
+  - a perceptual fingerprint that refuses photos already uploaded (even re-saved or resized).
+  Switches: `PHOTO_CHECKS` in `static/app.js`, `CHECK_REUSED_PHOTOS=1` on the server.
 
 ### Photo authenticity: what's next when we grow
 No method proves a photo is real with 100% certainty, so the app stacks checks and keeps a human in the loop

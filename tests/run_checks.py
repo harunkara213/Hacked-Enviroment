@@ -139,7 +139,9 @@ pts = points("v2")
 post(f"/api/spots/{s3['id']}/flag", files=img(), user="rep2")
 ok(points("v2") == pts - FULL and c.get("/api/users/v2").json()["strikes"] == 1, "3rd flag: points taken back + strike")
 
-print("== reused photos")
+print("== reused photos (switch is off by default; tested switched on)")
+ok(A.CHECK_REUSED_PHOTOS is False, "reused-photo check is off by default")
+A.CHECK_REUSED_PHOTOS = True
 same = new_photo()
 s = report("rep1").json()["spot"]["id"]
 c.post(f"/api/spots/{s}/claim", data={"user": "bob"})
@@ -150,6 +152,9 @@ Image.open(io.BytesIO(same)).resize((240, 180)).save(reenc, "JPEG", quality=75)
 ok(post(f"/api/spots/{s}/clean", files=img(reenc.getvalue()), user="bob").status_code == 409, "re-saved/shrunk copy is also refused")
 ok(post("/api/spots", files=[("photos", ("p.jpg", same, "image/jpeg"))], user="v1").status_code == 409,
    "a photo already used can't start a new report")
+A.CHECK_REUSED_PHOTOS = False
+ok(post("/api/spots", files=[("photos", ("p.jpg", same, "image/jpeg"))], user="v1").status_code == 200,
+   "with the check off, a reused photo is accepted")
 
 print("== donations")
 ok(c.post("/api/users/bob/donate", data={"user": "donor", "amount": 5}).status_code == 403, "donating to non-eligible is refused")
