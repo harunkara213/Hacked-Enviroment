@@ -60,7 +60,8 @@ Live: https://hacker-environment.onrender.com. **Every push to `main` deploys to
 - If the AI fails, scoring must not accept photos automatically (`ai.py` demo path gives 0 points).
 
 ## AI
-- Default model in `ai.py` (`MODEL`). If it doesn't exist for our key, `_generate` falls back to
+- Default model in `ai.py` (`MODEL`, env `GEMINI_MODEL`): `gemini-2.5-flash` with thinking off (cost ~0.15 cent per photo;
+  3.8 Flash was ~5x more). Don't change it without checking the price. If it doesn't exist for our key, `_generate` falls back to
   `gemini-2.5-flash`. `/api/status` shows the model actually in use and the last AI error.
 - Keep structured JSON output (`response_schema`). There is no AI fake-photo check (removed on purpose);
   fake photos are caught by the app-side metadata checks and photo fingerprints.

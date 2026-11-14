@@ -9,7 +9,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-MODEL = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
+MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")  # cheap + fast; thinking is off (see _config)
 # If MODEL is missing or not enabled for this key, fall back to a model we know works.
 FALLBACK_MODEL = "gemini-2.5-flash"
 ACTIVE_MODEL = MODEL  # what we actually use; shown on /api/status
@@ -109,20 +109,25 @@ def _parts(images: list[tuple[bytes, str]]):
 def _generate(contents, schema):
     global ACTIVE_MODEL
     from google.genai import types
-    config = types.GenerateContentConfig(
-        response_mime_type="application/json",
-        response_schema=schema,
-        temperature=0.2,
-    )
+    def _config(model):
+        extra = {}
+        if "2.5" in model:  # thinking tokens are most of the cost; the photo checks don't need them
+            extra["thinking_config"] = types.ThinkingConfig(thinking_budget=0)
+        return types.GenerateContentConfig(
+            response_mime_type="application/json",
+            response_schema=schema,
+            temperature=0.2,
+            **extra,
+        )
     try:
-        resp = _get_client().models.generate_content(model=ACTIVE_MODEL, contents=contents, config=config)
+        resp = _get_client().models.generate_content(model=ACTIVE_MODEL, contents=contents, config=_config(ACTIVE_MODEL))
     except Exception as e:
         # 404 / "not found" / "not supported" = bad model name: switch to the fallback for good.
         msg = repr(e).lower()
         if ACTIVE_MODEL != FALLBACK_MODEL and ("404" in msg or "not found" in msg or "not supported" in msg):
             print(f"[ai] model {ACTIVE_MODEL!r} unavailable, falling back to {FALLBACK_MODEL!r}: {e!r}")
             ACTIVE_MODEL = FALLBACK_MODEL
-            resp = _get_client().models.generate_content(model=ACTIVE_MODEL, contents=contents, config=config)
+            resp = _get_client().models.generate_content(model=ACTIVE_MODEL, contents=contents, config=_config(ACTIVE_MODEL))
         else:
             raise
     parsed = resp.parsed
