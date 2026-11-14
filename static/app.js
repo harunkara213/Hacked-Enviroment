@@ -289,7 +289,8 @@ const PROVENANCE_MARKERS = [
   ['Midjourney', 'Midjourney'], ['DALL-E', 'DALL-E'], ['Stable Diffusion', 'Stable Diffusion'],
   ['stable-diffusion', 'Stable Diffusion'], ['NovelAI', 'NovelAI'], ['Adobe Firefly', 'Adobe Firefly'],
   // editing apps
-  ['Adobe Photoshop', 'Photoshop'], ['Photoshop 3.0', 'Photoshop'], ['GIMP', 'GIMP'], ['Snapseed', 'Snapseed'],
+  // Note: NOT "Photoshop 3.0": that's only the name of the IPTC block iPhones write into normal photos.
+  ['Adobe Photoshop', 'Photoshop'], ['GIMP', 'GIMP'], ['Snapseed', 'Snapseed'],
   ['Lightroom', 'Lightroom'], ['Picsart', 'Picsart'], ['Canva', 'Canva'], ['Facetune', 'Facetune'], ['Meitu', 'Meitu'],
 ];
 

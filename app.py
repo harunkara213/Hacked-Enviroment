@@ -578,6 +578,32 @@ def manifest():
     return FileResponse(BASE / "static" / "manifest.json")
 
 
+_ai_check_cache = {"at": 0.0, "result": None}
+
+
+@app.get("/api/ai-check")
+def ai_check():
+    """Send one small test image to Gemini and report which model actually answered.
+    Cached for 10 minutes, so it can't be used to run up the AI bill."""
+    if _ai_check_cache["result"] and time.time() - _ai_check_cache["at"] < 600:
+        return {**_ai_check_cache["result"], "cached": True}
+    from PIL import Image, ImageDraw
+    im = Image.new("RGB", (320, 240), (90, 140, 70))           # grass
+    d = ImageDraw.Draw(im)
+    d.rectangle((140, 120, 175, 200), fill=(200, 40, 40))      # a can
+    d.polygon([(60, 180), (120, 150), (130, 210)], fill=(240, 240, 240))  # a wrapper
+    buf = io.BytesIO()
+    im.save(buf, "JPEG", quality=85)
+    started = time.time()
+    ai.LAST_ERROR = None
+    r = ai.assess_spot([(buf.getvalue(), "image/jpeg")])
+    result = {"configured_model": ai.MODEL, "model_used": ai.ACTIVE_MODEL, "answered_by": r["source"],
+              "ok": r["source"] == "gemini", "outcome": r.get("outcome"), "seconds": round(time.time() - started, 1),
+              "error": ai.LAST_ERROR}
+    _ai_check_cache.update(at=time.time(), result=result)
+    return {**result, "cached": False}
+
+
 @app.get("/api/status")
 def status():
     return {"ai": "gemini" if ai._get_client() else "demo", "model": ai.ACTIVE_MODEL, "last_error": ai.LAST_ERROR,

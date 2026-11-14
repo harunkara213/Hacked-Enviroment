@@ -291,5 +291,9 @@ ok(c.get("/api/users/Marcus").json()["goal"]["raised_cents"] == 1500, "donations
 lb2 = {x["user"]: x for x in c.get("/api/leaderboard").json()}
 ok(lb2["Marcus"]["goal"]["promise_kg"] == 80 and lb2["Jin"]["goal"] is None, "Ranks shows promises only for verified people")
 
+print("== AI check endpoint")
+r1 = c.get("/api/ai-check").json(); r2 = c.get("/api/ai-check").json()
+ok("model_used" in r1 and r1["cached"] is False and r2["cached"] is True, "AI check reports the model and is cached")
+
 print(f"\n{'ALL PASSED' if not FAILED else f'{len(FAILED)} FAILED'}")
 sys.exit(1 if FAILED else 0)
