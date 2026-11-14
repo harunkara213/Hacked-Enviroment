@@ -28,8 +28,24 @@ async function api(path, opts = {}) {
   const res = await fetch(path, opts);
   let body = null;
   try { body = await res.json(); } catch {}
-  if (!res.ok) throw new Error((body && body.detail) || `Something went wrong (${res.status})`);
+  if (!res.ok) {
+    const detail = body && body.detail;
+    const e = new Error(typeof detail === 'string' ? detail : (detail && detail.message) || `Something went wrong (${res.status})`);
+    if (detail && typeof detail === 'object') e.assessment = detail.analysis;
+    throw e;
+  }
   return body;
+}
+
+function assessmentCard(d) {
+  if (!d) return '';
+  const labels = { litter_detected: 'Litter detected', no_litter_detected: 'No litter detected', unable_to_determine: 'Unable to determine' };
+  const title = labels[d.outcome] || labels.unable_to_determine;
+  const color = d.outcome === 'litter_detected' ? 'text-forest-800 bg-forest-50'
+    : d.outcome === 'no_litter_detected' ? 'text-slate-700 bg-slate-100' : 'text-amber-900 bg-amber-50';
+  const items = (d.objects || []).map((o) => `<li><b>${esc(o.object_type || 'Unidentified object')} × ${Math.max(1, Number(o.count) || 1)}</b> · object ${Number(o.object_confidence) || 0}% · ${esc((o.discard_status || 'uncertain').replaceAll('_', ' '))}${o.disposal_category && o.disposal_category.toLowerCase() !== 'unknown' ? ` · disposal: ${esc(o.disposal_category)}` : ''}</li>`).join('');
+  const unavailable = d.source === 'demo' ? '<div class="mt-2 text-xs font-semibold">AI service unavailable; no detection result was produced.</div>' : '';
+  return `<section class="mt-4 rounded-2xl p-4 ${color}"><div class="font-extrabold">Photo assessment · ${esc(title)}</div><div class="mt-1 text-sm">Litter decision confidence: ${Number(d.litter_confidence) || 0}%</div>${items ? `<ul class="mt-2 space-y-1 text-sm list-disc pl-5">${items}</ul>` : '<div class="mt-2 text-sm">No waste objects were recognized.</div>'}<p class="mt-2 text-sm">${esc(d.rationale || d.summary || '')}</p>${unavailable}</section>`;
 }
 
 function showLoading(text, imgUrl) {
@@ -538,6 +554,7 @@ function openSpot(id) {
         <input type="file" accept="image/*" capture="environment" class="hidden" onchange="${handler}">
       </label>`;
   const note = s.verify_note ? `<div class="mt-4 rounded-2xl bg-slate-100 p-3 text-sm text-slate-600">${esc(s.verify_note)}</div>` : '';
+  const detection = assessmentCard(s.detection);
 
   let action = '';
   if (s.status === 'cleaned') {
@@ -621,6 +638,7 @@ function openSpot(id) {
       </div>
     </div>
     <p class="mt-3 text-slate-700">${esc(s.summary)}</p>
+    ${detection}
     <div class="mt-3 grid grid-cols-2 gap-2 text-sm">
       <div class="rounded-xl bg-slate-50 px-3 py-2">🗑️ <b>${s.bags}</b> bag${s.bags === 1 ? '' : 's'}</div>
       <div class="rounded-xl bg-slate-50 px-3 py-2">⏱️ ~<b>${s.minutes}</b> min</div>
@@ -804,7 +822,7 @@ async function submitReport(selfClean = false) {
   showLoading('Getting a precise GPS fix…', pending[0].url);
   const pos = await getLocationOrAsk(pending[0].url);
   if (!pos) { hideLoading(); return; }
-  showLoading('AI is analyzing the mess…', pending[0].url);
+  showLoading('AI is checking objects and scene context…', pending[0].url);
   const fd = new FormData();
   fd.append('user', me);
   fd.append('lat', pos.lat);
@@ -828,7 +846,11 @@ async function submitReport(selfClean = false) {
     toast(selfClean
       ? `Solo cleanup started · ${r.spot.points} pts. ${analysisNote} Clean it, then upload the after photo.`
       : `Posted! ${analysisNote} Worth ${r.spot.points} pts to a volunteer (+${r.report_bonus} for you). You can also clean it yourself for half points.`);
-  } catch (e) { hideLoading(); toast(e.message, 'err'); }
+  } catch (e) {
+    hideLoading();
+    if (e.assessment) openSheet(`<div class="mx-auto w-10 h-1.5 rounded-full bg-slate-200 mb-4"></div><h2 class="text-xl font-extrabold">Photo review</h2>${assessmentCard(e.assessment)}<button onclick="closeSheet()" class="mt-4 w-full rounded-2xl bg-forest-900 text-white font-bold py-3">Close</button>`);
+    else toast(e.message, 'err');
+  }
 }
 
 // ---------- leaderboard ----------

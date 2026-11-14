@@ -84,6 +84,8 @@ SPOT_EXTRA_COLUMNS = {
     "task_before_photo": "TEXT",
     "self_clean": "INTEGER",
     "seeded": "INTEGER",
+    "detection_status": "TEXT",
+    "detection_json": "TEXT",
 }
 
 
@@ -191,6 +193,10 @@ def spot_out(r) -> dict:
     d["photos"] = ["/uploads/" + p for p in json.loads(d["photos"])]
     d["hazards"] = json.loads(d["hazards"] or "[]")
     d["excluded"] = json.loads(d["excluded"] or "[]")
+    try:
+        d["detection"] = json.loads(d.get("detection_json") or "null")
+    except (TypeError, json.JSONDecodeError):
+        d["detection"] = None
     for k in ("after_photo", "verify_photo"):
         if d[k]:
             d[k] = "/uploads/" + d[k]
@@ -445,29 +451,32 @@ async def report_spot(
     result = ai.assess_spot(images)
     if result.get("looks_fake"):
         strike_fake(user, None)
-    if not result["is_litter"]:
-        if result.get("litter_confidence", 100) < 70:
-            raise HTTPException(422, "I couldn't tell clearly from these photos. Move closer, use good lighting, and include the litter in focus.")
-        raise HTTPException(422, "I couldn't confirm discarded litter in these photos. Try another angle that clearly shows the trash.")
+    if result["outcome"] == "no_litter_detected":
+        raise HTTPException(422, {
+            "message": "No litter detected in these photos.",
+            "analysis": result,
+        })
 
     spot_id = uuid.uuid4().hex[:10]
     names = [save_photo(d, m) for d, m in images]
+    # Uncertain reports remain visible for human judgment, but cannot mint rewards.
     points = round(result["points"] * SELF_CLEAN_FACTOR) if self_clean else result["points"]
     now = time.time()
     with closing(db()) as c, c:
         seen(c, user, lat, lng)
         c.execute("""INSERT INTO spots (id, lat, lng, reporter, photos, difficulty, bags, minutes,
-                     hazards, summary, points, ai_source, created_at)
-                     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                     hazards, summary, points, ai_source, created_at, detection_status, detection_json)
+                     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                   (spot_id, lat, lng, user, json.dumps(names), result["difficulty"],
                    result["estimated_bags"], result["estimated_minutes"], json.dumps(result["hazards"]),
-                   result["summary"], points, result["source"], now))
+                   result["summary"], points, result["source"], now, result["outcome"],
+                   json.dumps({k: result[k] for k in ("outcome", "objects", "litter_confidence", "rationale")})))
         if self_clean:
             c.execute("""UPDATE spots SET self_clean=1, status='claimed', claimed_by=?, claimed_at=?,
                          task_before_photo=? WHERE id=?""", (user, now, names[0], spot_id))
             bonus = 0
         else:
-            bonus = award(c, user, 5, "report", spot_id)
+            bonus = award(c, user, 5, "report", spot_id) if result["outcome"] == "litter_detected" else 0
         row = get_spot(c, spot_id)
     return {"spot": spot_out(row), "report_bonus": bonus}
 
@@ -494,7 +503,8 @@ def release_spot(spot_id: str, user: str = Form(...)):
         if tb and tb not in json.loads(s["photos"]):  # a solo report reuses its report photo: keep that
             c.execute("DELETE FROM photos WHERE name=?", (tb,))
         c.execute("""UPDATE spots SET status='open', claimed_by=NULL, claimed_at=NULL, task_before_photo=NULL,
-                     self_clean=0, points=? WHERE id=?""", (ai.points_for(s["difficulty"], s["bags"]), spot_id))
+                     self_clean=0, points=? WHERE id=?""",
+                  (0 if s["detection_status"] == "unable_to_determine" else ai.points_for(s["difficulty"], s["bags"]), spot_id))
         row = get_spot(c, spot_id)
     return spot_out(row)
 
@@ -534,7 +544,7 @@ def claim_spot(spot_id: str, user: str = Form(...)):
             if time.time() - (s["claimed_at"] or 0) < 24 * 3600:
                 raise HTTPException(409, f"{s['claimed_by']} is already on it.")
         own = s["reporter"] == user
-        full = ai.points_for(s["difficulty"], s["bags"])
+        full = 0 if s["detection_status"] == "unable_to_determine" else ai.points_for(s["difficulty"], s["bags"])
         if own and not (s["status"] == "claimed" and s["claimed_by"] == user):
             # Cleaning your own report = a solo cleanup: same limits as "I'll clean it myself"
             # (half points, daily cap, 60 s minimum, always checked), and the +5 report bonus goes back.
@@ -714,8 +724,10 @@ async def flag_spot(
     a = ai.assess_spot([img])
     if a.get("looks_fake"):
         strike_fake(user, spot_id)
-    if not a["is_litter"]:
-        raise HTTPException(422, "The AI doesn't see litter in your photo. Looks clean!")
+    if a["outcome"] != "litter_detected":
+        message = ("Unable to determine whether litter remains." if a["outcome"] == "unable_to_determine"
+                   else "No litter detected in your photo.")
+        raise HTTPException(422, {"message": message, "analysis": a})
 
     with closing(db()) as c, c:
         seen(c, user, lat, lng)

@@ -3,16 +3,18 @@
 If GEMINI_API_KEY is missing or the call fails, a deterministic "demo" result
 is returned so the live demo never breaks. Results say which path was used.
 """
-import hashlib
+import io
 import os
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
 MODEL = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
-# If MODEL is missing or not enabled for this key, fall back to a model we know works,
-# instead of silently dropping to demo scoring (which accepts any photo).
+# If MODEL is missing or not enabled for this key, fall back to a model we know works.
 FALLBACK_MODEL = "gemini-2.5-flash"
 ACTIVE_MODEL = MODEL  # what we actually use; shown on /api/status
+NO_LITTER_MIN_CONFIDENCE = 70
+LITTER_MIN_CONFIDENCE = 60
 
 _client = None
 LAST_ERROR = None  # exposed by /api/status so setup and API failures are visible
@@ -42,14 +44,29 @@ def _get_client():
 # ---------- schemas ----------
 
 class Assessment(BaseModel):
-    is_litter: bool = Field(description="True if any photo visibly shows discarded human-made waste outdoors or in a public place")
-    litter_confidence: int = Field(description="0-100 confidence in the litter decision; use a low score when the photo is too distant, dark, blurry, or obstructed to tell")
+    outcome: Literal["litter_detected", "no_litter_detected", "unable_to_determine"] = Field(description="Use unable_to_determine if a waste-capable object is visible but whether it was discarded is unclear, or image evidence is insufficient")
+    objects: list["DetectedObject"] = Field(description="Recognized waste-capable objects, including objects that appear intact/in use; empty only when no such object is visible")
+    litter_confidence: int = Field(description="0-100 confidence in the discard/litter decision")
+    rationale: str = Field(description="Short explanation of object recognition and the visible context used to judge whether it was discarded")
     difficulty: int = Field(description="Cleanup difficulty from 1 (a few items) to 5 (large dump, hazards, heavy items)")
     estimated_bags: int = Field(description="Estimated number of standard 50L garbage bags needed")
     estimated_minutes: int = Field(description="Estimated minutes for one person to clean it")
     hazards: list[str] = Field(description="Hazards to warn volunteers about, e.g. broken glass, needles. Empty if none")
     summary: str = Field(description="One short sentence describing the spot for volunteers")
     looks_fake: bool = Field(description="True if any photo looks like a photo of a screen, a screenshot, a stock/web image, or AI-generated/edited")
+
+
+class DetectedObject(BaseModel):
+    object_type: str = Field(description="Specific recognized object, such as glass food jar, plastic bottle, aluminum can, wrapper, tissue, paper/cardboard, or plastic bag")
+    material: str = Field(description="Best visible material, or unknown")
+    count: int = Field(description="Number of distinct physical objects; deduplicate across photos and crops")
+    object_confidence: int = Field(description="0-100 confidence that this object and type are correctly recognized")
+    discard_status: Literal["likely_discarded", "likely_not_discarded", "uncertain"] = Field(description="Whether the object appears abandoned/discarded based on scene context, not just its category")
+    disposal_category: str = Field(description="Suggested disposal stream if identifiable, otherwise unknown")
+    context: str = Field(description="Brief visible evidence for its discard status")
+
+
+Assessment.model_rebuild()
 
 
 class Verification(BaseModel):
@@ -63,14 +80,16 @@ FAKE_RULE = """Also check for cheating: set looks_fake=true only if a photo is c
 (moire, pixels, bezels), a screenshot, a stock/web image (watermark, studio look) or AI-generated/edited.
 Normal phone photos, even blurry or dark ones, are NOT fake."""
 
-ASSESS_PROMPT = """You assess reports for a community litter cleanup app. Examine every image carefully, including the ground, edges, gutters, bushes, and background. The images may show the same spot from different angles; evidence in any one image counts.
+ASSESS_PROMPT = """You assess photos for a community litter cleanup app. First recognize waste-capable objects; then separately decide whether each appears discarded from visible scene context. Recognize glass jars and bottles, plastic bottles and containers, aluminum cans, food packaging, plastic bags, paper, cardboard, wrappers, tissues, and other discarded human-made materials. Report intact/useful objects too; do not equate object category with litter.
 
-Count discarded human-made waste that a volunteer could pick up: bottles, cans, cups, wrappers, food packaging, paper, cardboard, bags, cigarette butts, broken household items, and dumped rubbish. A single recognizable discarded item is enough. Litter can be small, partly hidden, or far from the camera; do not require a large pile. In a public or outdoor place, treat an ambiguous man-made item as litter when it appears abandoned rather than in use.
+Examine all image areas. A single small item can be litter. Use floor/ground placement, isolation, dirt, damage, surrounding refuse, public/outdoor setting, or signs of active use to judge disposal. An intact jar/bottle indoors with no clear abandonment evidence is uncertain, not automatically litter and not proof the scene is clean. Do not use image failure or an unrecognized/ambiguous object to claim no litter.
 
-Set is_litter=false only when you are confident that none of the photos shows discarded human-made waste. Do not mistake leaves, rocks, shadows, stains, or ordinary dirt for litter. If the image is too dark, blurry, distant, or obstructed to decide, set litter_confidence low and explain what detail is unclear in the summary; do not claim the place is clean.
+Set outcome=litter_detected when any object is likely discarded; no_litter_detected only when you can confidently see no discarded waste (or all recognized items are clearly not discarded); otherwise use unable_to_determine. Empty objects only when no relevant object can be recognized. If it is too dark, blurry, distant, obstructed, or ambiguous, use unable_to_determine with low confidence and explain. Never claim no litter solely because recognition failed. Deduplicate repeated views of the same item.
 
 For a confirmed report, give a short summary naming the visible waste. Be realistic about effort: one or two small items = difficulty 1, a scattered handful = 2, a larger area or several bags = 3, a substantial dump = 4-5. Estimate bags, minutes, and hazards from what is visible, not from the photo quality.
 """ + FAKE_RULE
+
+CROP_PROMPT = """Recheck these photos for small or distant waste-capable objects. Full originals are followed by overlapping detail crops of the same photos. Identify specific object types first, then judge discard status from the full scene context. Do not count one physical item multiple times across crops. Return one consolidated assessment. Keep outcome unable_to_determine when recognition/context is insufficient; no_litter_detected requires confident visual evidence."""
 
 VERIFY_PROMPT = """You are verifying a volunteer cleanup for a community cleanup app.
 The first image(s) are BEFORE photos of a dirty spot. The LAST image is the AFTER photo the volunteer took.
@@ -117,11 +136,35 @@ def _generate(contents, schema):
     return parsed
 
 
-def _seed(images) -> int:
-    h = hashlib.sha256()
-    for data, _ in images:
-        h.update(data[:4096])
-    return int(h.hexdigest(), 16)
+def _detail_tiles(images):
+    """Create four overlapping, native-resolution crops per image for small-object review."""
+    from PIL import Image
+    tiles = []
+    for data, _mime in images:
+        with Image.open(io.BytesIO(data)) as source:
+            from PIL import ImageOps
+            image = ImageOps.exif_transpose(source).convert("RGB")
+            w, h = image.size
+            # A 58% window with 42% stride gives overlap and covers edge objects.
+            cw, ch = max(1, round(w * .58)), max(1, round(h * .58))
+            xs = sorted(set((0, max(0, w - cw))))
+            ys = sorted(set((0, max(0, h - ch))))
+            for y in ys:
+                for x in xs:
+                    crop = image.crop((x, y, min(w, x + cw), min(h, y + ch)))
+                    out = io.BytesIO()
+                    crop.save(out, format="JPEG", quality=94)
+                    tiles.append((out.getvalue(), "image/jpeg"))
+    return tiles
+
+
+def _apply_decision_thresholds(a):
+    a.litter_confidence = max(0, min(100, a.litter_confidence))
+    if a.outcome == "no_litter_detected" and a.litter_confidence < NO_LITTER_MIN_CONFIDENCE:
+        a.outcome = "unable_to_determine"
+    elif a.outcome == "litter_detected" and a.litter_confidence < LITTER_MIN_CONFIDENCE:
+        a.outcome = "unable_to_determine"
+    return a
 
 
 def assess_spot(images: list[tuple[bytes, str]]) -> dict:
@@ -129,29 +172,42 @@ def assess_spot(images: list[tuple[bytes, str]]) -> dict:
     client = _get_client()
     if client:
         try:
-            a = _generate(_parts(images) + [ASSESS_PROMPT], Assessment)
+            a = _apply_decision_thresholds(_generate(_parts(images) + [ASSESS_PROMPT], Assessment))
+            # Tile only when the full-image result is uncertain or misses all objects.
+            if a.outcome == "unable_to_determine" or not a.objects:
+                try:
+                    tiles = _detail_tiles(images)
+                    a = _apply_decision_thresholds(_generate(_parts(images + tiles) + [CROP_PROMPT], Assessment))
+                except Exception as crop_error:
+                    print(f"[ai] tiled review unavailable: {crop_error!r}")
             global LAST_ERROR
             LAST_ERROR = None
             a.difficulty = max(1, min(5, a.difficulty))
             a.estimated_bags = max(0, a.estimated_bags)
-            a.litter_confidence = max(0, min(100, a.litter_confidence))
-            return {**a.model_dump(), "points": points_for(a.difficulty, a.estimated_bags), "source": "gemini"}
+            for item in a.objects:
+                item.count = max(1, item.count)
+                item.object_confidence = max(0, min(100, item.object_confidence))
+            data = a.model_dump()
+            data["is_litter"] = a.outcome == "litter_detected"  # compatibility for older callers
+            data["summary"] = data.pop("summary") or a.rationale
+            points = points_for(a.difficulty, a.estimated_bags) if a.outcome == "litter_detected" else 0
+            return {**data, "points": points, "source": "gemini"}
         except Exception as e:  # network, quota, billing... keep the demo alive
             LAST_ERROR = repr(e)[:300]
             print(f"[ai] assess failed, using demo mode: {e!r}")
-    s = _seed(images)
-    difficulty = 1 + s % 5
-    bags = difficulty + s % 3
     return {
-        "is_litter": True,
+        "outcome": "unable_to_determine",
+        "objects": [],
+        "rationale": "Photo analysis is unavailable. A volunteer should review the photo before this is treated as confirmed litter.",
+        "is_litter": False,
         "litter_confidence": 0,
-        "difficulty": difficulty,
-        "estimated_bags": bags,
-        "estimated_minutes": 10 * difficulty + 5 * bags,
+        "difficulty": 1,
+        "estimated_bags": 0,
+        "estimated_minutes": 0,
         "hazards": [],
-        "summary": "Litter reported here (demo mode: AI offline).",
+        "summary": "AI could not determine whether this photo shows discarded litter.",
         "looks_fake": False,
-        "points": points_for(difficulty, bags),
+        "points": 0,
         "source": "demo",
     }
 
