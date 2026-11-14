@@ -1,4 +1,4 @@
-# Hacker Environment
+# Legacy Earth
 
 Spot trash. Clean it. Earn your **Generation Score**.
 
@@ -6,7 +6,7 @@ A mobile web app (installable to your home screen) where anyone can report a dir
 with a photo, AI estimates how hard it is to clean, and volunteers earn points by cleaning
 it up and proving it with an "after" photo.
 
-Built at HackED Beta 2026.
+Built at HackED Beta 2026. (The live URL and repo still use the project's first name, Hacker Environment.)
 
 ## How it works
 

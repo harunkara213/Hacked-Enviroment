@@ -1,6 +1,6 @@
 {
-  "name": "Hacker Environment",
-  "short_name": "HackerEnv",
+  "name": "Legacy Earth",
+  "short_name": "Legacy Earth",
   "description": "Spot trash. Clean it. Earn your Generation Score.",
   "start_url": "/",
   "display": "standalone",

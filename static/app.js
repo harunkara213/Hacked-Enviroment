@@ -1,4 +1,4 @@
-// Hacker Environment - client
+// Legacy Earth - client
 const UOFA = [53.5232, -113.5263];
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -221,7 +221,7 @@ function showLocationGate(state) {
     ? { title: 'Location is blocked', primary: "I've turned it on", secondary: 'Not now', steps: fixSteps(),
         msg: 'Your browser is blocking location for this site, so it can\'t ask you. Turn it on like this:' }
     : { title: 'Turn on location', primary: '📍 Allow location', secondary: 'Not now',
-        msg: 'Hacker Environment uses your location to show cleanups near you and to prove photos are taken at the spot. Tap below, then choose <b>Allow</b>.' });
+        msg: 'Legacy Earth uses your location to show cleanups near you and to prove photos are taken at the spot. Tap below, then choose <b>Allow</b>.' });
   $('locRetry').onclick = async () => {
     const result = await requestLocationFromTap();  // first thing in the tap -> browser pop-up
     if (result === 'granted') {
@@ -1099,7 +1099,7 @@ async function shareCard() {
   g.fillText('I clean up my city. 🌍', 90, 1150);
   g.fillStyle = 'rgba(255,255,255,.7)';
   g.font = '500 34px Inter, sans-serif';
-  g.fillText('Hacker Environment · ' + location.host, 90, 1220);
+  g.fillText('Legacy Earth · ' + location.host, 90, 1220);
 
   const blob = await new Promise((r) => c.toBlob(r, 'image/png'));
   const file = new File([blob], 'generation-score.png', { type: 'image/png' });
